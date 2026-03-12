@@ -586,13 +586,11 @@ pub async fn insert_data<E: TaskExecutor>(
         .transaction(Box::new(FileSystemCommitter::new()), engine.as_ref())?
         .with_operation("WRITE".to_string())
         .with_data_change(true);
-
     let write_context = txn.get_write_context();
     let add_files_metadata = engine
         .write_parquet(&ArrowEngineData::new(batch), &write_context, HashMap::new())
         .await?;
     txn.add_files(add_files_metadata);
-
     txn.commit(engine.as_ref())
 }
 
