@@ -10,6 +10,7 @@ Reads the output of `critcmp base changes` from stdin and writes:
      fastest to slowest.
   3. A `<details>` block (closed by default) containing the full
      per-benchmark table with columns: Test | Change | Base | PR.
+  4. The tier legend as a small-text footer line.
 
 Each benchmark is bucketed by its PR/base duration ratio into a tier with a
 marker emoji (see the threshold constants). When any benchmark lands in the
@@ -174,19 +175,21 @@ def render_summary(rows):
         parts.append(f"N/A {na}")
     return "**Summary:** " + " &nbsp;·&nbsp; ".join(parts)
 
+def render_legend():
+    """Render the tier legend as a small-text line for the comment footer."""
+    return (
+        f"<sub>**Legend:** {ROCKET} ≥15% faster &nbsp;·&nbsp;"
+        f"{GREEN_CHECK} faster or unchanged &nbsp;·&nbsp;"
+        f"{GRAY_CHECK} ≤3% slower &nbsp;·&nbsp;"
+        f"{CONSTRUCTION} 3-15% slower &nbsp;·&nbsp;"
+        f"{RED_X} ≥15% slower</sub>"
+    )
+
 def render_table(rows):
     """Render the per-benchmark table wrapped in a closed-by-default <details> block."""
     out = []
     out.append("<details>")
     out.append(f"<summary>Per-benchmark results ({len(rows)} rows)</summary>")
-    out.append("")
-    out.append(
-        f"**Legend:** {ROCKET} ≥15% faster &nbsp;·&nbsp;"
-        f"{GREEN_CHECK} faster or unchanged &nbsp;·&nbsp;"
-        f"{GRAY_CHECK} ≤3% slower &nbsp;·&nbsp;"
-        f"{CONSTRUCTION} 3-15% slower &nbsp;·&nbsp;"
-        f"{RED_X} ≥15% slower"
-    )
     out.append("")
     out.append("| Test | Change | Base         | PR               |")
     out.append("|------|--------|--------------|------------------|")
@@ -213,6 +216,8 @@ def main():
     print(render_summary(rows))
     print("")
     print(render_table(rows))
+    print("")
+    print(render_legend())
 
     # Record whether any benchmark crossed FAIL_THRESHOLD so the workflow can
     # fail the job (unless overridden by the ignore-benchmark-failure label).
