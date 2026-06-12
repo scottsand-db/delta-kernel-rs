@@ -48,11 +48,15 @@ concurrency:
 jobs:
   post-comment:
     name: Post benchmark results
-    # Only post when the upstream succeeded AND the upstream event was a PR
-    # event with a conversation to post to. `merge_group` and `push: main`
+    # Post whenever the upstream produced a comment artifact, on success OR
+    # failure: a failed run is most often the regression gate tripping, and the
+    # table still exists and should be shown. (When no artifact exists -- a
+    # genuinely broken bench run -- the download step below no-ops and
+    # post-failure-comment posts the static note instead.) Restricted to PR
+    # events with a conversation to post to; `merge_group` and `push: main`
     # runs of workflow A have no PR to comment on.
     if: >
-      github.event.workflow_run.conclusion == 'success'
+      contains(fromJSON('["success","failure","timed_out"]'), github.event.workflow_run.conclusion)
       && (github.event.workflow_run.event == 'pull_request'
           || github.event.workflow_run.event == 'issue_comment')
     runs-on: ubuntu-latest
@@ -165,11 +169,14 @@ jobs:
 
   post-failure-comment:
     name: Post benchmark failure note
-    # Replace any existing success comment with a failure note so reviewers
-    # don't see stale-green after a regression-causing push that breaks the
-    # bench itself. `timed_out` counts as failure for our purposes; we skip
-    # `cancelled` (a superseding run will post its own update) and `skipped`
-    # (nothing meaningful happened, e.g., draft).
+    # Static fallback for a genuinely broken bench run -- one that failed
+    # before producing a comment artifact (e.g. a compile error, not a
+    # regression). When the artifact does exist (the common case: the
+    # regression gate tripped), post-comment posts the real table and the
+    # find/post steps here skip, so the two jobs never both comment.
+    # `timed_out` counts as failure for our purposes; we skip `cancelled` (a
+    # superseding run will post its own update) and `skipped` (nothing
+    # meaningful happened, e.g., draft).
     if: >
       contains(fromJSON('["failure","timed_out"]'), github.event.workflow_run.conclusion)
       && (github.event.workflow_run.event == 'pull_request'
@@ -242,16 +249,29 @@ jobs:
           else
             printf 'number=%s\n' "$NUM" >> "$GITHUB_OUTPUT"
           fi
+      - name: Probe for bench comment artifact
+        # If a comment artifact exists, the failure was the regression gate and
+        # post-comment posts the real table; this job's steps below then skip.
+        # We only post the static note when the artifact is absent.
+        id: probe-body
+        if: steps.pr.outputs.skip != 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: bench-comment
+          path: /tmp/
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
       - name: Find existing bench comment
         id: find
-        if: steps.pr.outputs.skip != 'true'
+        if: steps.pr.outputs.skip != 'true' && steps.probe-body.outcome != 'success'
         uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3.1.0
         with:
           issue-number: ${{ steps.pr.outputs.number }}
           comment-author: 'github-actions[bot]'
           body-includes: '<!-- delta-kernel-bench-comment -->'
       - name: Post or update failure note
-        if: steps.pr.outputs.skip != 'true'
+        if: steps.pr.outputs.skip != 'true' && steps.probe-body.outcome != 'success'
         uses: peter-evans/create-or-update-comment@71345be0265236311c031f5c7866368bd1eff043 # v4.0.0
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}
@@ -261,6 +281,6 @@ jobs:
           edit-mode: replace
           body: |
             <!-- delta-kernel-bench-comment -->
-            ## Benchmark results
+            ## Benchmark results: ❌ Fail
 
-            <sub>Benchmark run failed. [See workflow run](${{ env.RUN_URL }}) for details.</sub>
+            <sub>Benchmark run failed before producing results. [See workflow run](${{ env.RUN_URL }}) for details.</sub>
