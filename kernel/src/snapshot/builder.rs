@@ -197,6 +197,9 @@ impl SnapshotBuilder {
         err
     )]
     pub fn build(self, engine: &dyn Engine) -> DeltaResult<SnapshotRef> {
+        // TEST ONLY: artificial slowdown to trip the benchmark regression gate.
+        // This branch must never merge.
+        std::thread::sleep(std::time::Duration::from_millis(20));
         info!(
             target = self.target_version_str(),
             from_version = ?self.existing_snapshot.as_ref().map(|s| s.version()),
