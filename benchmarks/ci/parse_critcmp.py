@@ -36,7 +36,7 @@ FAIL_THRESHOLD = 1.15     # ratio >= 1.15: at least 15% slower (fails the job).
 NEUTRAL_THRESHOLD = 0.005
 
 # Tier markers for the Change cell, fastest to slowest.
-ROCKET = '🚀'        # ratio <= ROCKET_THRESHOLD
+ROCKET = '🚀'         # ratio <= ROCKET_THRESHOLD
 GREEN_CHECK = '✅'    # ROCKET_THRESHOLD < ratio < 1.0 + NEUTRAL_THRESHOLD
 GRAY_CHECK = '☑️'     # 1.0 + NEUTRAL_THRESHOLD <= ratio <= GRAY_THRESHOLD
 CONSTRUCTION = '🚧'   # GRAY_THRESHOLD < ratio < FAIL_THRESHOLD
