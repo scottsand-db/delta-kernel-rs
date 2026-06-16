@@ -68,6 +68,10 @@ pub(crate) mod data_layout;
 
 pub(crate) mod alter_table;
 pub use alter_table::AlterTableTransaction;
+#[cfg(feature = "check-constraints-in-dev")]
+mod constraints;
+#[cfg(feature = "check-constraints-in-dev")]
+pub use constraints::{CheckConstraint, ConstraintChecker};
 mod commit_info;
 mod domain_metadata;
 pub(crate) mod schema_evolution;
