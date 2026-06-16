@@ -311,10 +311,16 @@ static INVARIANTS_INFO: FeatureInfo = FeatureInfo {
     enablement_check: EnablementCheck::AlwaysIfSupported,
 };
 
+// TODO: drop the gate once CHECK constraint write support ships. With the
+// `check-constraints-in-dev` feature on, kernel admits writes to constrained tables and the
+// connector is responsible for enforcing the constraints (see `Transaction::constraint_checker`).
 static CHECK_CONSTRAINTS_INFO: FeatureInfo = FeatureInfo {
     feature_type: FeatureType::WriterOnly,
     min_legacy_version: Some(MinReaderWriterVersion::new(1, 3)),
     feature_requirements: &[],
+    #[cfg(feature = "check-constraints-in-dev")]
+    kernel_support: KernelSupport::Supported,
+    #[cfg(not(feature = "check-constraints-in-dev"))]
     kernel_support: KernelSupport::NotSupported,
     enablement_check: EnablementCheck::AlwaysIfSupported,
 };
