@@ -19,7 +19,9 @@ use super::{ExistingTable, Transaction};
 use crate::engine_data::{GetData, RowVisitor, TypedGetData as _};
 use crate::expressions::sql::parse_predicate;
 use crate::expressions::Predicate;
-use crate::schema::{column_name, ColumnName, ColumnNamesAndTypes, DataType, SchemaRef, StructType};
+use crate::schema::{
+    column_name, ColumnName, ColumnNamesAndTypes, DataType, SchemaRef, StructType,
+};
 use crate::{DeltaResult, EngineData, Error, EvaluationHandler, PredicateEvaluator};
 
 const DELTA_CONSTRAINT_PREFIX: &str = "delta.constraints.";
@@ -37,8 +39,8 @@ pub struct CheckConstraint {
 
 impl CheckConstraint {
     /// Build a constraint from its name and raw SQL, eagerly attempting to parse the SQL into a
-    /// predicate against `schema`. Unparsable SQL leaves [`is_kernel_parsable`](Self::is_kernel_parsable)
-    /// false.
+    /// predicate against `schema`. Unparsable SQL leaves
+    /// [`is_kernel_parsable`](Self::is_kernel_parsable) false.
     fn new(name: String, raw_sql: String, schema: &StructType) -> Self {
         let parsed = parse_predicate(&raw_sql, schema).ok();
         Self {
@@ -50,15 +52,15 @@ impl CheckConstraint {
 
     /// Extract every `delta.constraints.<name>` entry from a table configuration map. The key
     /// prefix is matched case-insensitively (matching Spark); the name keeps its original case.
-    fn from_configuration(cfg: &HashMap<String, String>, schema: &StructType) -> Vec<CheckConstraint> {
+    fn from_configuration(
+        cfg: &HashMap<String, String>,
+        schema: &StructType,
+    ) -> Vec<CheckConstraint> {
         cfg.iter()
-            .filter_map(|(key, sql)| {
-                key.to_ascii_lowercase()
-                    .starts_with(DELTA_CONSTRAINT_PREFIX)
-                    .then(|| {
-                        let name = key[DELTA_CONSTRAINT_PREFIX.len()..].to_string();
-                        CheckConstraint::new(name, sql.clone(), schema)
-                    })
+            .filter(|(key, _)| key.to_ascii_lowercase().starts_with(DELTA_CONSTRAINT_PREFIX))
+            .map(|(key, sql)| {
+                let name = key[DELTA_CONSTRAINT_PREFIX.len()..].to_string();
+                CheckConstraint::new(name, sql.clone(), schema)
             })
             .collect()
     }
@@ -112,7 +114,12 @@ impl ConstraintChecker {
         let combined = handler.new_predicate_evaluator(schema.clone(), Arc::new(conjunction))?;
         let individuals = named
             .into_iter()
-            .map(|(name, p)| Ok((name, handler.new_predicate_evaluator(schema.clone(), Arc::new(p))?)))
+            .map(|(name, p)| {
+                Ok((
+                    name,
+                    handler.new_predicate_evaluator(schema.clone(), Arc::new(p))?,
+                ))
+            })
             .collect::<DeltaResult<Vec<_>>>()?;
         Ok(Self {
             combined,
@@ -240,7 +247,8 @@ mod tests {
 
     fn bool_batch(values: Vec<Option<bool>>) -> Box<dyn EngineData> {
         let array = BooleanArray::from(values);
-        let arrow_schema = ArrowSchema::new(vec![Field::new("output", ArrowDataType::Boolean, true)]);
+        let arrow_schema =
+            ArrowSchema::new(vec![Field::new("output", ArrowDataType::Boolean, true)]);
         let batch = RecordBatch::try_new(Arc::new(arrow_schema), vec![Arc::new(array)]).unwrap();
         Box::new(ArrowEngineData::new(batch))
     }

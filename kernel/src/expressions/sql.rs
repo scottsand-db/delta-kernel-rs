@@ -107,11 +107,11 @@ fn parse_comparison(sql: &str, schema: &StructType) -> DeltaResult<Predicate> {
             Expression::column([r.name().clone()]),
         )),
         (Some(col), None) => {
-            let lit = parse_sql(rhs, &col.data_type())?;
+            let lit = parse_sql(rhs, col.data_type())?;
             Ok(Predicate::eq(Expression::column([col.name().clone()]), lit))
         }
         (None, Some(col)) => {
-            let lit = parse_sql(lhs, &col.data_type())?;
+            let lit = parse_sql(lhs, col.data_type())?;
             Ok(Predicate::eq(Expression::column([col.name().clone()]), lit))
         }
         (None, None) => Err(Error::generic(format!(
@@ -192,7 +192,12 @@ fn parse_date_literal(trimmed: &str, sql: &str) -> DeltaResult<Scalar> {
 /// Parse a zoneless (wall-clock) `Scalar::TimestampNtz` from `'2024-01-01 12:00:00[.fff]'` or
 /// `TIMESTAMP_NTZ '...'`.
 fn parse_timestamp_ntz_literal(trimmed: &str, sql: &str) -> DeltaResult<Scalar> {
-    let raw = unwrap_quoted_body(trimmed, &["TIMESTAMP_NTZ"], &PrimitiveType::TimestampNtz, sql)?;
+    let raw = unwrap_quoted_body(
+        trimmed,
+        &["TIMESTAMP_NTZ"],
+        &PrimitiveType::TimestampNtz,
+        sql,
+    )?;
     PrimitiveType::TimestampNtz.parse_scalar(&raw)
 }
 
@@ -219,7 +224,9 @@ fn unwrap_quoted_body(
     let body = strip_typed_prefix_and_unquote(trimmed, keywords)?;
     let body = body.trim();
     if body.is_empty() {
-        return Err(Error::generic(format!("empty {primitive:?} literal: {sql}")));
+        return Err(Error::generic(format!(
+            "empty {primitive:?} literal: {sql}"
+        )));
     }
     Ok(body.to_string())
 }
@@ -368,10 +375,11 @@ fn decode_binary_literal(input: &str) -> DeltaResult<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
     use crate::expressions::column_expr;
     use crate::schema::StructField;
-    use rstest::rstest;
 
     fn schema() -> StructType {
         StructType::new_unchecked([
@@ -401,13 +409,19 @@ mod tests {
     #[test]
     fn parse_predicate_column_eq_literal_resolves_type() {
         let p = parse_predicate("age = 21", &schema()).unwrap();
-        assert_eq!(p, Predicate::eq(column_expr!("age"), Expression::literal(21)));
+        assert_eq!(
+            p,
+            Predicate::eq(column_expr!("age"), Expression::literal(21))
+        );
     }
 
     #[test]
     fn parse_predicate_literal_on_left_normalizes_to_column_first() {
         let p = parse_predicate("21 = age", &schema()).unwrap();
-        assert_eq!(p, Predicate::eq(column_expr!("age"), Expression::literal(21)));
+        assert_eq!(
+            p,
+            Predicate::eq(column_expr!("age"), Expression::literal(21))
+        );
     }
 
     #[test]

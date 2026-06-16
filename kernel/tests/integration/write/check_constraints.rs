@@ -58,7 +58,13 @@ async fn create_constrained_table(
             "createdTime": 0,
         }
     });
-    add_commit(location.as_str(), store.as_ref(), 0, format!("{protocol}\n{metadata}")).await?;
+    add_commit(
+        location.as_str(),
+        store.as_ref(),
+        0,
+        format!("{protocol}\n{metadata}"),
+    )
+    .await?;
     Ok(location)
 }
 
@@ -76,8 +82,8 @@ fn batch(schema: &StructType, ages: Vec<i32>, names: Vec<&str>) -> DeltaResult<A
 }
 
 #[tokio::test]
-async fn check_constraints_pass_inserts_and_fail_errors(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn check_constraints_pass_inserts_and_fail_errors() -> Result<(), Box<dyn std::error::Error>>
+{
     let schema = table_schema();
     let (store, engine, location) = engine_store_setup("test_check_constraints", None);
     let table_url = create_constrained_table(
@@ -109,7 +115,11 @@ async fn check_constraints_pass_inserts_and_fail_errors(
 
     // === violating write: one row breaks `valid_name` -> check errors, nothing written ===
     let snapshot = Snapshot::builder_for(table_url.clone()).build(&engine)?;
-    assert_eq!(snapshot.version(), 1, "passing write should have produced v1");
+    assert_eq!(
+        snapshot.version(),
+        1,
+        "passing write should have produced v1"
+    );
     let txn = snapshot
         .transaction(Box::new(FileSystemCommitter::new()), &engine)?
         .with_operation("WRITE".to_string())

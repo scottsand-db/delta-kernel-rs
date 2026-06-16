@@ -26,7 +26,10 @@ mod column_names;
 pub(crate) mod literal_expression_transform;
 pub(crate) use literal_expression_transform::literal_expression_transform;
 mod scalars;
-#[cfg(any(feature = "column-defaults-in-dev", feature = "check-constraints-in-dev"))]
+#[cfg(any(
+    feature = "column-defaults-in-dev",
+    feature = "check-constraints-in-dev"
+))]
 pub(crate) mod sql;
 
 pub type ExpressionRef = std::sync::Arc<Expression>;
