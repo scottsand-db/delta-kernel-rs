@@ -27,7 +27,7 @@ async fn test_parallel_scan_metadata_events_carry_table_type(
     let build_snapshot = |version: u64| -> KernelResult<Arc<Snapshot>> {
         let builder = Snapshot::builder_for(table_url.clone());
         let builder = if catalog_managed {
-            builder.with_max_catalog_version(version)
+            builder.with_catalog_metadata(version, vec![])
         } else {
             builder
         };

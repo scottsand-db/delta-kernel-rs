@@ -225,7 +225,7 @@ mod tests {
             .unwrap()
             .unwrap_committed();
         let snapshot = Snapshot::builder_for(table_path)
-            .with_max_catalog_version(0)
+            .with_catalog_metadata(0, vec![])
             .build(engine)
             .unwrap();
         assert_eq!(snapshot.version(), 0);
@@ -356,7 +356,7 @@ mod tests {
             .unwrap_committed();
 
         let snapshot = Snapshot::builder_for(table_path)
-            .with_max_catalog_version(0)
+            .with_catalog_metadata(0, vec![])
             .build(&engine)
             .unwrap();
         let req = build_uc_create_table_request(&snapshot, &engine, "test_user_domain").unwrap();
@@ -427,7 +427,7 @@ mod tests {
             .commit(&engine)
             .unwrap();
         let v0_snapshot = Snapshot::builder_for(table_path)
-            .with_max_catalog_version(0)
+            .with_catalog_metadata(0, vec![])
             .build(&engine)
             .unwrap();
         let result = v0_snapshot
@@ -440,7 +440,7 @@ mod tests {
 
         // Load snapshot at version 1.
         let snapshot = Snapshot::builder_for(table_path)
-            .with_max_catalog_version(1)
+            .with_catalog_metadata(1, vec![])
             .build(&engine)
             .unwrap();
         assert_eq!(snapshot.version(), 1);

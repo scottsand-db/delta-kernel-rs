@@ -1,5 +1,6 @@
 //! Builder for creating [`Snapshot`] instances.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use delta_kernel_derive::internal_api;
@@ -8,7 +9,7 @@ use tracing::{info, instrument};
 use crate::cancellation::CancellationTokenRef;
 use crate::engine::CancellableEngine;
 use crate::log_path::LogPath;
-use crate::log_segment::{LogSegment, validate_catalog_managed_log_tail};
+use crate::log_segment::{CatalogMetadata, LogSegment, validate_catalog_managed_log_tail};
 use crate::log_segment_files::CheckpointHandling;
 use crate::metrics::events::SNAPSHOT_COMPLETED_SPAN;
 use crate::metrics::{MetricId, SnapshotLoadMetricContext, SnapshotLoadType};
@@ -49,6 +50,8 @@ pub struct SnapshotBuilder<Mode = FromTableRoot> {
     version: Option<Version>,
     log_tail: Vec<LogPath>,
     max_catalog_version: Option<Version>,
+    catalog_metadata: Option<CatalogMetadata>,
+    legacy_catalog_input_was_set: bool,
     incremental_replay: IncrementalReplay,
     checkpoint_handling: CheckpointHandling,
     snapshot_hint: Option<Box<SnapshotHint>>,
@@ -76,6 +79,7 @@ impl<Mode> std::fmt::Debug for SnapshotBuilder<Mode> {
             .field("version", &self.version)
             .field("log_tail", &self.log_tail)
             .field("max_catalog_version", &self.max_catalog_version)
+            .field("catalog_metadata", &self.catalog_metadata)
             .field("incremental_replay", &self.incremental_replay)
             .field("checkpoint_handling", &self.checkpoint_handling)
             .field("snapshot_hint", &self.snapshot_hint)
@@ -146,6 +150,8 @@ impl SnapshotBuilder<FromTableRoot> {
             version: None,
             log_tail: Vec::new(),
             max_catalog_version: None,
+            catalog_metadata: None,
+            legacy_catalog_input_was_set: false,
             incremental_replay: IncrementalReplay::default(),
             checkpoint_handling: CheckpointHandling::Adopt,
             snapshot_hint: None,
@@ -158,11 +164,12 @@ impl SnapshotBuilder<FromTableRoot> {
 
     /// Supply complete snapshot state that Kernel can validate and construct without engine I/O.
     ///
-    /// The hint conflicts with [`with_log_tail`](Self::with_log_tail) and non-disabled incremental
-    /// CRC replay. An explicit [`at_version`](Self::at_version) must equal the hint version. When
-    /// no explicit version is set, a supplied maximum catalog version must also equal the hint
-    /// version. The caller must canonicalize supplied log paths into the same URL form as the table
-    /// root. Kernel preserves the paths, requires them to be beneath this builder's table log root,
+    /// The hint conflicts with [`with_catalog_metadata`](Self::with_catalog_metadata), legacy
+    /// log tails, and non-disabled incremental CRC replay. An explicit
+    /// [`at_version`](Self::at_version) must equal the hint version. When no explicit version
+    /// is set, a supplied maximum catalog version must also equal the hint version. The caller
+    /// must canonicalize supplied log paths into the same URL form as the table root. Kernel
+    /// preserves the paths, requires them to be beneath this builder's table log root,
     /// and validates structural consistency without reading the supplied files. The caller must
     /// ensure the protocol and metadata came from those files.
     ///
@@ -187,6 +194,8 @@ impl SnapshotBuilder<FromSnapshot> {
             version: None,
             log_tail: Vec::new(),
             max_catalog_version: None,
+            catalog_metadata: None,
+            legacy_catalog_input_was_set: false,
             incremental_replay: IncrementalReplay::default(),
             checkpoint_handling: CheckpointHandling::Adopt,
             snapshot_hint: None,
@@ -237,7 +246,12 @@ impl<Mode> SnapshotBuilder<Mode> {
     /// tables.
     ///
     /// [`with_max_catalog_version`]: Self::with_max_catalog_version
+    ///
+    /// Deprecated: use [`with_catalog_metadata`](Self::with_catalog_metadata) with a complete
+    /// catalog response. A filtered or snapshot-derived suffix does not satisfy that contract.
+    #[deprecated(note = "use with_catalog_metadata with the complete catalog response")]
     pub fn with_log_tail(mut self, log_tail: Vec<LogPath>) -> Self {
+        self.legacy_catalog_input_was_set = true;
         self.log_tail = log_tail;
         self
     }
@@ -258,8 +272,51 @@ impl<Mode> SnapshotBuilder<Mode> {
     /// tail entry must be >= the requested version.
     ///
     /// [`at_version`]: Self::at_version
+    ///
+    /// Deprecated: supply the bound and complete commit list together through
+    /// [`with_catalog_metadata`](Self::with_catalog_metadata). A bound alone does not assert that
+    /// the catalog retains no commits.
+    #[deprecated(note = "use with_catalog_metadata with the complete catalog response")]
     pub fn with_max_catalog_version(mut self, max_catalog_version: Version) -> Self {
+        self.legacy_catalog_input_was_set = true;
         self.max_catalog_version = Some(max_catalog_version);
+        self
+    }
+
+    /// Supply the latest ratified version and all commit references retained by a catalog.
+    ///
+    /// Both inputs must come from the same complete catalog observation for this table and
+    /// committed history. Commits may use staged or published filenames and must form an ascending,
+    /// contiguous suffix ending at `max_catalog_version`. An empty list asserts that all commits
+    /// through that version are published. Kernel validates structure but cannot prove
+    /// completeness; filtered, time-bounded, or snapshot-derived tails do not satisfy this
+    /// contract.
+    ///
+    /// Returned references are authoritative. When updating an existing snapshot, omitted staged
+    /// references are replaced with canonical published paths, including at the same version.
+    /// A different staged UUID for a cached version triggers reconstruction without the seed's
+    /// computed state or checkpoints and CRCs covering the conflict. If published metadata is
+    /// unavailable from this build, replacement preserves
+    /// the staged file's byte size and inherits its modification time without I/O. That
+    /// inherited time is not an observed destination mtime or a cleanup-age measurement.
+    /// Catalog-managed table timestamps continue to use in-commit timestamps. Constructing a
+    /// replacement reference does not check that the published object still exists; subsequent
+    /// reads can return missing-file errors after published-log cleanup.
+    ///
+    /// An explicit time-travel target must not exceed the catalog maximum. Supply the complete
+    /// observation even for time travel; Kernel validates it before selecting the target's commits.
+    /// Incremental updates cannot move backward. This method requires a catalog-managed table and
+    /// conflicts with snapshot hints and either deprecated catalog setter, even an empty legacy
+    /// tail. Repeating this setter replaces the entire observation.
+    pub fn with_catalog_metadata(
+        mut self,
+        max_catalog_version: Version,
+        catalog_commits: Vec<LogPath>,
+    ) -> Self {
+        self.catalog_metadata = Some(CatalogMetadata {
+            max_catalog_version,
+            commits: catalog_commits.into_iter().map(Into::into).collect(),
+        });
         self
     }
 
@@ -329,7 +386,7 @@ impl<Mode> SnapshotBuilder<Mode> {
     #[instrument(
         name = SNAPSHOT_COMPLETED_SPAN,
         skip_all,
-        fields(path = %self.table_path(), report, enable_call_frame, version = tracing::field::Empty, operation_id = %self.operation_id, is_catalog_managed = self.max_catalog_version.is_some(), correlation_id = self.correlation_id.as_deref().unwrap_or(""), load_type = self.load_type().as_ref()),
+        fields(path = %self.table_path(), report, enable_call_frame, version = tracing::field::Empty, operation_id = %self.operation_id, is_catalog_managed = self.catalog_bound().is_some(), correlation_id = self.correlation_id.as_deref().unwrap_or(""), load_type = self.load_type().as_ref()),
         err
     )]
     pub fn build(self, engine: &dyn Engine) -> KernelResult<SnapshotRef> {
@@ -342,8 +399,10 @@ impl<Mode> SnapshotBuilder<Mode> {
              max_catalog_version={:?}",
             self.target_version_str(),
             self.existing_snapshot.as_ref().map(|s| s.version()),
-            self.log_tail.len(),
-            self.max_catalog_version
+            self.catalog_metadata
+                .as_ref()
+                .map_or(self.log_tail.len(), |catalog| catalog.commits.len()),
+            self.catalog_bound()
         );
 
         let load_type = self.load_type();
@@ -355,6 +414,8 @@ impl<Mode> SnapshotBuilder<Mode> {
             version,
             log_tail,
             max_catalog_version,
+            catalog_metadata,
+            legacy_catalog_input_was_set,
             incremental_replay,
             checkpoint_handling,
             snapshot_hint,
@@ -364,6 +425,36 @@ impl<Mode> SnapshotBuilder<Mode> {
             mode: _,
         } = self;
 
+        require!(
+            catalog_metadata.is_none() || !legacy_catalog_input_was_set,
+            KernelError::MaxCatalogVersion(
+                "with_catalog_metadata cannot be combined with legacy catalog setters".into()
+            )
+        );
+        if let Some(catalog) = &catalog_metadata {
+            let table_root = table_root
+                .as_deref()
+                .or_else(|| {
+                    existing_snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.table_root().as_str())
+                })
+                .ok_or_else(|| KernelError::internal_error("Missing snapshot table root"))?;
+            catalog.validate(
+                &try_parse_uri(table_root)?.join(DELTA_LOG_DIR_WITH_SLASH)?,
+                version,
+            )?;
+            require!(
+                snapshot_hint.is_none(),
+                KernelError::MaxCatalogVersion(
+                    "with_catalog_metadata cannot be combined with a snapshot hint".into()
+                )
+            );
+        }
+        let max_catalog_version = catalog_metadata
+            .as_ref()
+            .map(|catalog| catalog.max_catalog_version)
+            .or(max_catalog_version);
         let metric_context = SnapshotLoadMetricContext {
             operation_id,
             is_catalog_managed: max_catalog_version.is_some(),
@@ -385,10 +476,20 @@ impl<Mode> SnapshotBuilder<Mode> {
             let engine = scoped_engine
                 .as_ref()
                 .map_or(engine, |engine| engine as &dyn Engine);
-            let log_tail: Vec<_> = log_tail.into_iter().map(Into::into).collect();
+            let log_tail: Vec<_> = match &catalog_metadata {
+                Some(catalog) if table_root.is_some() => catalog.commits.clone(),
+                Some(_) => Vec::new(),
+                None => log_tail.into_iter().map(Into::into).collect(),
+            };
 
             // Pre-build validations for catalog-managed tables
-            Self::validate_catalog_managed_build_inputs(version, max_catalog_version, &log_tail)?;
+            if catalog_metadata.is_none() {
+                Self::validate_catalog_managed_build_inputs(
+                    version,
+                    max_catalog_version,
+                    &log_tail,
+                )?;
+            }
 
             // Use time-travel version if set, otherwise fall back to max_catalog_version. Passing
             // this as the version to LogSegment::for_snapshot does NOT skip the _last_checkpoint
@@ -401,13 +502,18 @@ impl<Mode> SnapshotBuilder<Mode> {
 
             if let Some(table_root) = table_root {
                 let table_url = try_parse_uri(table_root)?;
-                let log_segment = LogSegment::for_snapshot(
+                let mut log_segment = LogSegment::for_snapshot(
                     engine.storage_handler().as_ref(),
                     table_url.join(DELTA_LOG_DIR_WITH_SLASH)?,
                     log_tail,
                     effective_version,
                     metric_context.clone(),
                 )?;
+                if let Some(catalog) = &catalog_metadata {
+                    log_segment = catalog
+                        .reconcile(Cow::Owned(log_segment), &[])?
+                        .into_owned();
+                }
                 Snapshot::try_new_from_log_segment(
                     table_url,
                     log_segment,
@@ -426,6 +532,7 @@ impl<Mode> SnapshotBuilder<Mode> {
                 Snapshot::try_new_from(
                     existing_snapshot,
                     log_tail,
+                    catalog_metadata.as_ref(),
                     engine,
                     effective_version,
                     metric_context,
@@ -469,7 +576,7 @@ impl<Mode> SnapshotBuilder<Mode> {
             !is_catalog_managed || max_catalog_version.is_some(),
             KernelError::MaxCatalogVersion(
                 "Max catalog version is required when loading a catalog-managed table. \
-                 Use with_max_catalog_version()."
+                 Use with_catalog_metadata() with the complete catalog response."
                     .to_string()
             )
         );
@@ -511,8 +618,15 @@ impl<Mode> SnapshotBuilder<Mode> {
         }
     }
 
+    fn catalog_bound(&self) -> Option<Version> {
+        self.catalog_metadata
+            .as_ref()
+            .map(|catalog| catalog.max_catalog_version)
+            .or(self.max_catalog_version)
+    }
+
     fn target_version_str(&self) -> String {
-        if let Some(mcv) = self.max_catalog_version {
+        if let Some(mcv) = self.catalog_bound() {
             return match self.version {
                 Some(v) => format!("{v} (max_catalog_version={mcv})"),
                 None => format!("{mcv} (max_catalog_version)"),
@@ -949,6 +1063,7 @@ pub(super) mod tests {
         }
 
         #[test_log::test(tokio::test)]
+        #[allow(deprecated)]
         async fn test_staged_commits_without_max_catalog_version_errors()
         -> KernelResult<(), Box<dyn std::error::Error>> {
             let (engine, store, table_root) = setup_catalog_managed_test().await;
@@ -967,6 +1082,7 @@ pub(super) mod tests {
         }
 
         #[test_log::test(tokio::test)]
+        #[allow(deprecated)]
         async fn test_version_exceeds_max_catalog_version_errors() -> KernelResult<()> {
             let (engine, _store, table_root) = setup_catalog_managed_test().await;
 
@@ -981,6 +1097,7 @@ pub(super) mod tests {
         }
 
         #[test_log::test(tokio::test)]
+        #[allow(deprecated)]
         async fn test_log_tail_last_version_mismatch_errors()
         -> KernelResult<(), Box<dyn std::error::Error>> {
             let (engine, store, table_root) = setup_catalog_managed_test().await;
@@ -1018,6 +1135,7 @@ pub(super) mod tests {
         }
 
         #[test_log::test(tokio::test)]
+        #[allow(deprecated)]
         async fn test_non_catalog_managed_table_with_max_catalog_version_errors()
         -> KernelResult<(), Box<dyn std::error::Error>> {
             let (engine, store, table_root) = setup_test();
@@ -1035,6 +1153,7 @@ pub(super) mod tests {
         }
 
         #[test_log::test(tokio::test)]
+        #[allow(deprecated)]
         async fn test_log_tail_last_version_less_than_time_travel_version_errors()
         -> KernelResult<(), Box<dyn std::error::Error>> {
             let (engine, store, table_root) = setup_catalog_managed_test().await;
@@ -1059,6 +1178,7 @@ pub(super) mod tests {
         }
 
         #[test_log::test(tokio::test)]
+        #[allow(deprecated)]
         async fn test_max_catalog_version_as_effective_version()
         -> KernelResult<(), Box<dyn std::error::Error>> {
             let (engine, store, table_root) = setup_catalog_managed_test().await;
@@ -1077,6 +1197,7 @@ pub(super) mod tests {
         }
 
         #[test_log::test(tokio::test)]
+        #[allow(deprecated)]
         async fn test_time_travel_with_max_catalog_version()
         -> KernelResult<(), Box<dyn std::error::Error>> {
             let (engine, store, table_root) = setup_catalog_managed_test().await;
@@ -1094,6 +1215,7 @@ pub(super) mod tests {
         }
 
         #[test_log::test(tokio::test)]
+        #[allow(deprecated)]
         async fn test_builder_from_catalog_managed_without_mcv_errors()
         -> KernelResult<(), Box<dyn std::error::Error>> {
             let (engine, store, table_root) = setup_catalog_managed_test().await;
@@ -1118,6 +1240,7 @@ pub(super) mod tests {
         #[case::unsorted(vec![1, 2], vec![2, 1], 2)]
         #[case::overflow(vec![], vec![Version::MAX, 0], 0)]
         #[test_log::test(tokio::test)]
+        #[allow(deprecated)]
         async fn test_non_contiguous_log_tail_errors(
             #[case] commit_versions: Vec<u64>,
             #[case] log_tail_versions: Vec<u64>,
@@ -1136,6 +1259,7 @@ pub(super) mod tests {
                 })
                 .collect();
 
+            #[allow(deprecated)]
             let result = SnapshotBuilder::new_for(table_root)
                 .with_log_tail(log_tail)
                 .with_max_catalog_version(mcv)
@@ -1156,6 +1280,7 @@ pub(super) mod tests {
         #[case::multipart_checkpoint("checkpoint.0000000001.0000000002.parquet")]
         #[case::compaction("00000000000000000002.compacted.json")]
         #[test_log::test(tokio::test)]
+        #[allow(deprecated)]
         async fn test_non_commit_log_tail_errors(
             #[case] suffix: &str,
         ) -> KernelResult<(), Box<dyn std::error::Error>> {
@@ -1165,6 +1290,7 @@ pub(super) mod tests {
                 test_utils::delta_path_for_version(1, suffix),
             )];
 
+            #[allow(deprecated)]
             let result = SnapshotBuilder::new_for(table_root)
                 .with_log_tail(log_tail)
                 .with_max_catalog_version(1)

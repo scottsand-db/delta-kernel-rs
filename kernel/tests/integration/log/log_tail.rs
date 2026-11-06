@@ -73,8 +73,7 @@ async fn basic_snapshot_with_log_tail_staged_commits() -> Result<(), Box<dyn std
         create_log_path(&table_url, path2.clone()),
     ];
     let snapshot = Snapshot::builder_for(table_root)
-        .with_log_tail(log_tail.clone())
-        .with_max_catalog_version(2)
+        .with_catalog_metadata(2, log_tail.clone())
         .build(engine.as_ref())?;
     assert_eq!(snapshot.version(), 2);
     let log_segment = snapshot.log_segment();
@@ -103,9 +102,8 @@ async fn basic_snapshot_with_log_tail_staged_commits() -> Result<(), Box<dyn std
 
     // 2. Now check for time-travel to 1
     let snapshot = Snapshot::builder_for(table_root)
-        .with_log_tail(log_tail)
+        .with_catalog_metadata(2, log_tail)
         .at_version(1)
-        .with_max_catalog_version(2)
         .build(engine.as_ref())?;
     assert_eq!(snapshot.version(), 1);
     let log_segment = snapshot.log_segment();
@@ -128,8 +126,7 @@ async fn basic_snapshot_with_log_tail_staged_commits() -> Result<(), Box<dyn std
     // 3. Check case for log_tail is only 1 staged commit
     let log_tail = vec![create_log_path(&table_url, path1.clone())];
     let snapshot = Snapshot::builder_for(table_root)
-        .with_log_tail(log_tail)
-        .with_max_catalog_version(1)
+        .with_catalog_metadata(1, log_tail)
         .build(engine.as_ref())?;
     assert_eq!(snapshot.version(), 1);
     let log_segment = snapshot.log_segment();
@@ -151,7 +148,7 @@ async fn basic_snapshot_with_log_tail_staged_commits() -> Result<(), Box<dyn std
 
     // 4. Check if we don't pass log tail
     let snapshot = Snapshot::builder_for(table_root)
-        .with_max_catalog_version(0)
+        .with_catalog_metadata(0, vec![])
         .build(engine.as_ref())?;
     assert_eq!(snapshot.version(), 0);
     let log_segment = snapshot.log_segment();
@@ -170,8 +167,7 @@ async fn basic_snapshot_with_log_tail_staged_commits() -> Result<(), Box<dyn std
         delta_path_for_version(0, "json"),
     )];
     let snapshot = Snapshot::builder_for(table_root)
-        .with_log_tail(log_tail)
-        .with_max_catalog_version(0)
+        .with_catalog_metadata(0, log_tail)
         .build(engine.as_ref())?;
 
     assert_eq!(snapshot.version(), 0);
@@ -222,8 +218,7 @@ async fn timestamp_resolution_with_staged_commits() -> Result<(), Box<dyn std::e
         create_log_path(&table_url, path2),
     ];
     let snapshot = Snapshot::builder_for(table_root)
-        .with_log_tail(log_tail)
-        .with_max_catalog_version(2)
+        .with_catalog_metadata(2, log_tail)
         .build(engine.as_ref())?;
     assert_eq!(snapshot.version(), 2);
 
@@ -250,6 +245,7 @@ async fn timestamp_resolution_with_staged_commits() -> Result<(), Box<dyn std::e
 }
 
 #[tokio::test]
+#[allow(deprecated)] // Exercises published tails on filesystem-managed tables.
 async fn basic_snapshot_with_log_tail() -> Result<(), Box<dyn std::error::Error>> {
     let (storage, engine, table_url) = setup_test();
     let table_root = table_url.as_str();
@@ -280,6 +276,7 @@ async fn basic_snapshot_with_log_tail() -> Result<(), Box<dyn std::error::Error>
 }
 
 #[tokio::test]
+#[allow(deprecated)] // Exercises published tails on filesystem-managed tables.
 async fn log_tail_behind_filesystem() -> Result<(), Box<dyn std::error::Error>> {
     let (storage, engine, table_url) = setup_test();
     let table_root = table_url.as_str();
@@ -338,18 +335,18 @@ async fn incremental_snapshot_skip_new_checkpoints_with_log_tail(
 
     let mut initial_snapshot = Snapshot::builder_for(table_root)
         .at_version(1)
-        .with_max_catalog_version(2)
+        .with_catalog_metadata(2, vec![])
         .build(engine.as_ref())?;
     assert_eq!(initial_snapshot.version(), 1);
     if with_checkpoint {
         initial_snapshot.clone().checkpoint(engine.as_ref(), None)?;
         initial_snapshot = Snapshot::builder_for(table_root)
             .at_version(1)
-            .with_max_catalog_version(2)
+            .with_catalog_metadata(2, vec![])
             .build(engine.as_ref())?;
         Snapshot::builder_for(table_root)
             .at_version(2)
-            .with_max_catalog_version(2)
+            .with_catalog_metadata(2, vec![])
             .build(engine.as_ref())?
             .checkpoint(engine.as_ref(), None)?;
     }
@@ -378,8 +375,7 @@ async fn incremental_snapshot_skip_new_checkpoints_with_log_tail(
     // ===== WHEN =====
     // Build from version 1 using the catalog tail while retaining every intervening commit.
     let new_snapshot = Snapshot::builder_from(initial_snapshot)
-        .with_log_tail(log_tail)
-        .with_max_catalog_version(4)
+        .with_catalog_metadata(4, log_tail)
         .skip_new_checkpoints()
         .build(engine.as_ref())?;
 
@@ -468,7 +464,7 @@ async fn incremental_snapshot_caps_at_max_catalog_version() -> Result<(), Box<dy
     // Build initial snapshot at version 1, catalog knows about version 2
     let initial_snapshot = Snapshot::builder_for(table_root)
         .at_version(1)
-        .with_max_catalog_version(mcv)
+        .with_catalog_metadata(mcv, vec![])
         .build(engine.as_ref())?;
     assert_eq!(initial_snapshot.version(), 1);
 
@@ -483,8 +479,7 @@ async fn incremental_snapshot_caps_at_max_catalog_version() -> Result<(), Box<dy
         delta_path_for_version(mcv, "json"),
     )];
     let new_snapshot = Snapshot::builder_from(initial_snapshot)
-        .with_log_tail(log_tail)
-        .with_max_catalog_version(mcv)
+        .with_catalog_metadata(mcv, log_tail)
         .build(engine.as_ref())?;
 
     // Snapshot respects the catalog's reported max version (v2)
@@ -494,6 +489,7 @@ async fn incremental_snapshot_caps_at_max_catalog_version() -> Result<(), Box<dy
 }
 
 #[tokio::test]
+#[allow(deprecated)] // Exercises published tails on filesystem-managed tables.
 async fn log_tail_exceeds_requested_version() -> Result<(), Box<dyn std::error::Error>> {
     let (storage, engine, table_url) = setup_test();
     let table_root = table_url.as_str();
@@ -530,6 +526,7 @@ async fn log_tail_exceeds_requested_version() -> Result<(), Box<dyn std::error::
 }
 
 #[tokio::test]
+#[allow(deprecated)] // Exercises published tails on filesystem-managed tables.
 async fn log_tail_behind_requested_version() -> Result<(), Box<dyn std::error::Error>> {
     let (storage, engine, table_url) = setup_test();
     let table_root = table_url.as_str();

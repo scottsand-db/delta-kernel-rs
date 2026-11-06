@@ -88,8 +88,9 @@ pub use snapshot::hint as snapshot_hint;
 pub use snapshot::{
     ExclusiveSnapshotBuilder, FfiIncrementalReplay, FfiSnapshotBuilder, free_snapshot_builder,
     get_snapshot_builder, get_snapshot_builder_from, snapshot_builder_build,
-    snapshot_builder_with_incremental_crc_replay, snapshot_builder_with_log_tail,
-    snapshot_builder_with_max_catalog_version, snapshot_builder_with_version,
+    snapshot_builder_with_catalog_metadata, snapshot_builder_with_incremental_crc_replay,
+    snapshot_builder_with_log_tail, snapshot_builder_with_max_catalog_version,
+    snapshot_builder_with_version,
 };
 
 #[cfg(test)]
@@ -1958,6 +1959,7 @@ mod tests {
     use delta_kernel::object_store::memory::InMemory;
     use delta_kernel::object_store::path::Path;
     use delta_kernel::object_store::{DynObjectStore, ObjectStoreExt as _};
+    use delta_kernel::path::LogPathFileType;
     use delta_kernel::schema::schema_ref;
     use delta_kernel_default_engine::DefaultEngineBuilder;
     use delta_kernel_default_engine::executor::tokio::TokioMultiThreadExecutor;
@@ -2095,6 +2097,194 @@ mod tests {
             );
             free_engine(engine);
         }
+    }
+
+    #[rstest]
+    #[case::null_nonempty(
+        true,
+        FFIKernelError::GenericError,
+        "slice pointer is null with length 1"
+    )]
+    #[case::invalid_url(false, FFIKernelError::InvalidUrlError, "relative URL without a base")]
+    fn snapshot_builder_catalog_metadata_rejects_invalid_array_and_drops_builder(
+        #[case] null_nonempty: bool,
+        #[case] expected_error_type: FFIKernelError,
+        #[case] expected_error: &str,
+    ) {
+        let engine = crate::ffi_test_utils::error_only_engine_handle();
+        let engine_arc = unsafe { engine.clone_as_arc() };
+        let references_before = Arc::strong_count(&engine_arc);
+        let table_root = "memory:///table/";
+        let builder = unsafe {
+            ok_or_panic(get_snapshot_builder(
+                kernel_string_slice!(table_root),
+                engine.shallow_copy(),
+            ))
+        };
+        assert_eq!(Arc::strong_count(&engine_arc), references_before + 1);
+        let invalid_location = "invalid relative URL";
+        let paths = [log_path::FfiLogPath::new(
+            kernel_string_slice!(invalid_location),
+            0,
+            0,
+        )];
+        let catalog_commits = log_path::LogPathArray {
+            ptr: if null_nonempty {
+                std::ptr::null()
+            } else {
+                paths.as_ptr()
+            },
+            len: 1,
+        };
+
+        let result = unsafe { snapshot_builder_with_catalog_metadata(builder, 0, catalog_commits) };
+        assert_extern_result_error_contains(result, expected_error_type, expected_error);
+        assert_eq!(Arc::strong_count(&engine_arc), references_before);
+        unsafe { free_engine(engine) };
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn snapshot_builder_catalog_metadata_rejects_mixed_setters(
+        #[values(false, true)] complete_first: bool,
+        #[values(false, true)] legacy_bound: bool,
+    ) -> KernelResult<()> {
+        let path = "memory:///test_table/";
+        let (_, engine, snapshot) = make_catalog_managed_engine_and_v0_snapshot(path).await?;
+        let result = unsafe {
+            let builder = ok_or_panic(get_snapshot_builder_from(
+                snapshot.shallow_copy(),
+                engine.shallow_copy(),
+            ));
+            let complete = |builder| {
+                ok_or_panic(snapshot_builder_with_catalog_metadata(
+                    builder,
+                    0,
+                    log_path::LogPathArray::empty(),
+                ))
+            };
+            let legacy = |builder| {
+                if legacy_bound {
+                    snapshot_builder_with_max_catalog_version(builder, 0)
+                } else {
+                    ok_or_panic(snapshot_builder_with_log_tail(
+                        builder,
+                        log_path::LogPathArray::empty(),
+                    ))
+                }
+            };
+            let builder = if complete_first {
+                legacy(complete(builder))
+            } else {
+                complete(legacy(builder))
+            };
+            snapshot_builder_build(builder)
+        };
+        assert_extern_result_error_contains(
+            result,
+            FFIKernelError::MaxCatalogVersionError,
+            "cannot be combined",
+        );
+        unsafe {
+            free_snapshot(snapshot);
+            free_engine(engine);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn snapshot_builder_catalog_metadata_preserves_complete_empty_on_incremental_build()
+    -> KernelResult<()> {
+        let path = "memory:///test_table/";
+        let (storage, engine, base) = make_catalog_managed_engine_and_v0_snapshot(path).await?;
+        let actions = format!(
+            "{}\n{}",
+            r#"{"commitInfo":{"inCommitTimestamp":1587968586155,"txnId":"test-txn-1"}}"#,
+            actions_to_string(vec![TestAction::Add("data.parquet".into())]),
+        );
+        let staged = add_staged_commit(path, storage.as_ref(), 1, actions.clone()).await?;
+        let snapshot = unsafe {
+            let builder = ok_or_panic(get_snapshot_builder_from(
+                base.shallow_copy(),
+                engine.shallow_copy(),
+            ));
+            let builder = {
+                let location = format!(
+                    "{path}_delta_log/_staged_commits/{}",
+                    staged.filename().unwrap()
+                );
+                let paths = [log_path::FfiLogPath::new(
+                    kernel_string_slice!(location),
+                    123,
+                    actions.len() as u64,
+                )];
+                ok_or_panic(snapshot_builder_with_catalog_metadata(
+                    builder,
+                    1,
+                    log_path::LogPathArray {
+                        ptr: paths.as_ptr(),
+                        len: paths.len(),
+                    },
+                ))
+            };
+            // The borrowed array and location are gone before the builder consumes their copies.
+            ok_or_panic(snapshot_builder_build(builder))
+        };
+        add_commit(path, storage.as_ref(), 1, actions).await?;
+        storage.delete(&staged).await?;
+        let repaired = unsafe {
+            let builder = ok_or_panic(get_snapshot_builder_from(
+                snapshot.shallow_copy(),
+                engine.shallow_copy(),
+            ));
+            let builder = ok_or_panic(snapshot_builder_with_catalog_metadata(
+                builder,
+                99,
+                log_path::LogPathArray::empty(),
+            ));
+            let builder = ok_or_panic(snapshot_builder_with_catalog_metadata(
+                builder,
+                1,
+                log_path::LogPathArray::empty(),
+            ));
+            ok_or_panic(snapshot_builder_build(builder))
+        };
+        assert_eq!(unsafe { version(repaired.shallow_copy()) }, 1);
+        assert_eq!(
+            unsafe {
+                ok_or_panic(snapshot_timestamp(
+                    repaired.shallow_copy(),
+                    engine.shallow_copy(),
+                ))
+            },
+            1587968586155,
+        );
+        let repaired_snapshot = unsafe { repaired.as_ref() };
+        let original_snapshot = unsafe { snapshot.as_ref() };
+        let repaired_paths = &repaired_snapshot
+            .log_segment()
+            .listed
+            .ascending_commit_files;
+        assert!(
+            repaired_paths
+                .iter()
+                .all(|commit| commit.file_type == LogPathFileType::Commit)
+        );
+        assert!(
+            original_snapshot
+                .log_segment()
+                .listed
+                .ascending_commit_files
+                .iter()
+                .any(|commit| commit.file_type == LogPathFileType::StagedCommit)
+        );
+        unsafe {
+            free_snapshot(repaired);
+            free_snapshot(snapshot);
+            free_snapshot(base);
+            free_engine(engine);
+        }
+        Ok(())
     }
 
     #[test]
@@ -3405,9 +3595,8 @@ mod tests {
             invalid_snapshot,
             FFIKernelError::MaxCatalogVersionError,
             Some(concat!(
-                "Max catalog version error: Max catalog version is required when providing ",
-                "staged commits. ",
-                "Use with_max_catalog_version()."
+                "Max catalog version error: A catalog version bound is required when providing ",
+                "staged commits."
             )),
         );
 
@@ -3437,7 +3626,7 @@ mod tests {
         None,
         concat!(
             "Max catalog version error: Max catalog version is required when loading a ",
-            "catalog-managed table. Use with_max_catalog_version()."
+            "catalog-managed table. Use with_catalog_metadata() with the complete catalog response."
         )
     )]
     #[case::non_catalog_managed_with_max_catalog_version(

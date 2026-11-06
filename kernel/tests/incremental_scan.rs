@@ -138,7 +138,7 @@ async fn within_range_cancellation(
 }
 
 // Catalog-managed: commits in the range live as staged JSONs under `_staged_commits/`
-// (not in the published log) and are surfaced to the snapshot via `with_log_tail`.
+// (not in the published log) and are surfaced to the snapshot via `with_catalog_metadata`.
 // `IncrementalScanBuilder` must walk the snapshot's commit list -- not re-list storage --
 // or those commits are silently invisible and the diff is wrong.
 #[tokio::test]
@@ -174,8 +174,7 @@ async fn picks_up_staged_commits_from_log_tail() -> Result<(), Box<dyn std::erro
         create_log_path(&table_url, staged2),
     ];
     let target = Snapshot::builder_for(table_url)
-        .with_log_tail(log_tail)
-        .with_max_catalog_version(2)
+        .with_catalog_metadata(2, log_tail)
         .build(engine.as_ref())?;
     assert_eq!(target.version(), 2);
 

@@ -622,7 +622,7 @@ impl LogSegmentFiles {
     /// (inclusive). If successful, this returns a `LogSegmentFiles`.
     ///
     /// The `log_tail` is an optional sequence of commits provided by the caller, e.g. via
-    /// [`SnapshotBuilder::with_log_tail`]. It may contain either published or staged commits. The
+    /// [`SnapshotBuilder::with_catalog_metadata`]. It may contain published or staged commits. The
     /// `log_tail` must strictly adhere to being a 'tail' — a contiguous cover of versions `X..=Y`
     /// where `Y` is the latest version of the table. If it overlaps with commits listed from the
     /// filesystem, the `log_tail` will take precedence for commits; non-commit files (CRC,

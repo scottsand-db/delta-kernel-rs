@@ -54,8 +54,11 @@ schema, metadata, properties, and version number.
 
 Built via `Snapshot::builder_for(url).build(engine)` (latest version) or
 `.at_version(v).build(engine)` (specific version). For catalog-managed tables,
-`.with_log_tail(commits)` supplies recent unpublished commits from the catalog and
-`.with_max_catalog_version(v)` caps the snapshot at the latest catalog-ratified version.
+`.with_catalog_metadata(v, commits)` supplies a complete catalog observation and caps the snapshot
+at the latest catalog-ratified version. An incremental build replaces cached staged references
+retired by that observation, including when the snapshot version stays the same. Deprecated
+`with_log_tail` and `with_max_catalog_version` inputs retain their partial-tail and bound-only
+contracts and do not establish retirement.
 `Snapshot::builder_from(snapshot)` returns an `IncrementalSnapshotBuilder` that reuses the input
 snapshot. Its opt-in `skip_new_checkpoints()` mode keeps the input checkpoint and every commit in
 the update window so a snapshot-derived `CommitRange` can inspect them without another log
@@ -245,9 +248,9 @@ all returned batches: the engine may split a single file across multiple batches
 ## Catalog-Managed Tables
 
 Tables whose commits go through a catalog (e.g. Unity Catalog) instead of direct filesystem
-writes. Kernel doesn't know about catalogs: the catalog client provides a log tail via
-`SnapshotBuilder::with_log_tail()`, caps the version via `with_max_catalog_version()`, and
-uses a custom `Committer` for staging/ratifying/publishing commits.
+writes. Kernel doesn't know about catalogs: the catalog client supplies a complete retained commit
+list and latest ratified version through `SnapshotBuilder::with_catalog_metadata()` and uses a
+custom `Committer` for staging, ratifying, and publishing commits.
 
 The `UCCommitter` (in the `delta-kernel-unity-catalog` crate) is the reference implementation of a
 catalog committer for Unity Catalog. It writes version 0 directly to `_delta_log/`. For later

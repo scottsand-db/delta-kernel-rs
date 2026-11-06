@@ -93,9 +93,9 @@ IDs, catalog APIs, or catalog servers. Instead:
 - The **catalog client** (a client-side library you write or import) works
   together with your connector to resolve table names to paths, fetch
   credentials, and retrieve recent ratified commits from the catalog.
-- The catalog client translates the catalog's response into a `Vec<LogPath>` log
-  tail and a max catalog version. Your connector passes these to `SnapshotBuilder`
-  to load the table.
+- The catalog client translates the complete catalog response into a `Vec<LogPath>` retained
+  commit list and the latest ratified version. Your connector passes both to `SnapshotBuilder`
+  to load or refresh the table.
 - For writes, the catalog client provides a **`Committer`** that knows how to
   stage, ratify, and publish commits through the catalog.
 - Kernel does its job (protocol compliance, log replay, data skipping, schema
@@ -123,8 +123,7 @@ IDs, catalog APIs, or catalog servers. Instead:
 |                                                           |
 |  Uses Kernel APIs to read and write:                      |
 |    Snapshot::builder_for(path)                            |
-|      .with_log_tail(commits)                              |
-|      .with_max_catalog_version(version)                   |
+|      .with_catalog_metadata(version, commits)             |
 |      .build(&engine)                                      |
 |    snapshot.update_table(                                 |
 |      UpdateTableOperation::Write, engine_info, true)      |
@@ -143,20 +142,12 @@ IDs, catalog APIs, or catalog servers. Instead:
 
 ### Key Kernel APIs for catalog-managed tables
 
-Four Kernel APIs form the integration surface between the catalog client and
-Kernel:
+These Kernel APIs connect your catalog client to snapshot construction and writes:
 
-- **`SnapshotBuilder::with_log_tail(Vec<LogPath>)`** accepts a contiguous run of
-  commits from version `M` to version `N` inclusive (published or staged). The
-  sequence must be ascending, gap-free, and duplicate-free. See
-  [Reading catalog-managed tables](./reading.md#building-a-log-tail) for the exact
-  rules, including what `M` and `N` must equal with and without time travel.
-
-- **`SnapshotBuilder::with_max_catalog_version(Version)`** caps the snapshot
-  version at the catalog's latest ratified version. Kernel requires this to be set
-  for every catalog-managed snapshot, so readers come with an explicit
-  catalog-ratified upper bound rather than silently reading whatever happens to be
-  on the filesystem.
+- **`SnapshotBuilder::with_catalog_metadata(version, commits)`** supplies a complete catalog
+  observation and bounds the snapshot to the latest ratified version. On an incremental build,
+  Kernel also replaces cached staged references that the catalog has retired, including when
+  the table version hasn't advanced. See [Reading catalog-managed tables](./reading.md).
 
 - **`Committer` trait** defines how transactions are committed. A catalog
   committer implements `commit()` to stage and ratify commits through the
@@ -179,7 +170,7 @@ Kernel for reading. The exact API calls depend on your catalog.
 // 1. Resolve table name through catalog API
 //    catalog_client.get_table("catalog.schema.table") -> table_id, path, credentials
 
-// 2. Get ratified commits from catalog
+// 2. Get the complete retained commit list and latest ratified version from the catalog
 //    catalog_client.get_commits(table_id) -> commits, max_version
 
 // 3. Convert catalog response to LogPath entries. If your catalog returns
@@ -194,10 +185,9 @@ Kernel for reading. The exact API calls depend on your catalog.
 // 4. Build Engine with vended credentials
 //    let engine = build_engine_with_credentials(path, credentials);
 
-// 5. Build Snapshot with log tail from catalog
+// 5. Build Snapshot with the complete catalog observation
 //    let snapshot = Snapshot::builder_for(path)
-//        .with_log_tail(log_tail)
-//        .with_max_catalog_version(max_version)
+//        .with_catalog_metadata(max_version, log_tail)
 //        .build(&engine)?;
 
 // 6. Read the table using standard Kernel APIs
@@ -207,8 +197,7 @@ Kernel for reading. The exact API calls depend on your catalog.
 
 The key insight: the catalog client handles all catalog-specific logic
 (authentication, API calls, response parsing). By the time Kernel sees the request,
-it is a standard `Snapshot::builder_for()` call with an extra log tail and version
-cap.
+it is a standard `Snapshot::builder_for()` call with a complete catalog observation.
 
 ## Maintenance operations
 

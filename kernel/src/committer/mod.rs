@@ -19,11 +19,11 @@
 //! Implementations must ensure that actions are committed atomically to the
 //! table at the given version and either (1) persisted directly to object storage as published
 //! deltas as in non-catalog-managed tables or (2) persisted within the catalog and made available
-//! to readers during snapshot construction via the [`log_tail`] API.
+//! to readers through a complete [`catalog observation`] during snapshot construction.
 //!
 //! [`Transaction`]: crate::transaction::Transaction
 //! [`commit`]: crate::committer::Committer::commit
-//! [`log_tail`]: crate::snapshot::SnapshotBuilder::with_log_tail
+//! [`catalog observation`]: crate::snapshot::SnapshotBuilder::with_catalog_metadata
 //! [`EngineData`]: crate::EngineData
 
 mod commit_types;

@@ -309,7 +309,7 @@ async fn commit_success_carries_table_type(#[case] catalog_managed: bool) -> Ker
 
     let builder = Snapshot::builder_for(table_url);
     let builder = if catalog_managed {
-        builder.with_max_catalog_version(0)
+        builder.with_catalog_metadata(0, vec![])
     } else {
         builder
     };

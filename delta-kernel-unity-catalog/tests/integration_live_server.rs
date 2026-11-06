@@ -216,7 +216,7 @@ async fn live_create_table() {
     // The table is catalog-managed, so the snapshot build requires the catalog's max version; the
     // just-created table is at v0.
     let snapshot = Snapshot::builder_for(table_root.clone())
-        .with_max_catalog_version(0)
+        .with_catalog_metadata(0, vec![])
         .build(engine.as_ref())
         .expect("failed to build post-commit snapshot");
     assert_eq!(

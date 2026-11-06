@@ -11,8 +11,8 @@ use delta_kernel::{Engine, KernelError, Snapshot};
 use delta_kernel_default_engine::DefaultEngine;
 use delta_kernel_default_engine::executor::tokio::TokioMultiThreadExecutor;
 use delta_kernel_unity_catalog::{
-    UCCommitter, get_required_properties_for_disk, log_tail_from_commits,
-    snapshot_builder_from_load_table,
+    UCCommitter, get_required_properties_for_disk, incremental_snapshot_builder_from_load_table,
+    log_tail_from_commits, snapshot_builder_from_load_table,
 };
 use rstest::rstest;
 use test_utils::{insert_data_with, read_scan};
@@ -173,6 +173,93 @@ async fn test_scan_returns_fixture_rows() -> Result<(), TestError> {
     Ok(())
 }
 
+#[rstest]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_incremental_catalog_response_survives_retired_staged_file_deletion(
+    #[values(false, true)] advances: bool,
+    #[values(false, true)] retires_all: bool,
+) -> Result<(), TestError> {
+    let TestSetup {
+        update_table_client,
+        engine,
+        snapshot: seed,
+        table_uri,
+        _tmp_dir: tmp_dir,
+    } = setup().await?;
+    let latest = if advances {
+        commit(&seed, &update_table_client, &engine)?
+    } else {
+        seed.clone()
+    };
+    let expected_timestamp = latest.reader().get_timestamp(&engine)?;
+    let mut resp = update_table_client.load_table_response(TABLE_ID, table_uri.as_str())?;
+    let log_dir = tmp_dir.path().join("_delta_log");
+    let retired: Vec<_> = resp
+        .commits
+        .iter()
+        .filter(|commit| retires_all || commit.version == 1)
+        .cloned()
+        .collect();
+    for commit in &retired {
+        std::fs::copy(
+            log_dir.join("_staged_commits").join(&commit.file_name),
+            log_dir.join(format!("{:020}.json", commit.version)),
+        )?;
+    }
+    resp.commits
+        .retain(|commit| !retires_all && commit.version != 1);
+    let repaired =
+        incremental_snapshot_builder_from_load_table(seed.clone(), &resp)?.build(&engine)?;
+    assert_eq!(repaired.version(), latest.version());
+    assert!(!Arc::ptr_eq(&seed, &repaired));
+    for commit in retired {
+        std::fs::remove_file(log_dir.join("_staged_commits").join(commit.file_name))?;
+    }
+
+    assert_eq!(
+        repaired.reader().get_timestamp(&engine)?,
+        expected_timestamp
+    );
+    let scan = repaired.scan_builder().build()?;
+    let batches = read_scan(&scan, Arc::new(engine) as Arc<dyn Engine>)?;
+    assert_eq!(
+        batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+        200
+    );
+    Ok(())
+}
+
+#[rstest]
+#[case::different_uuid(true, false)]
+#[case::different_location(false, true)]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_incremental_catalog_response_rejects_different_table(
+    #[case] different_uuid: bool,
+    #[case] different_location: bool,
+) -> Result<(), TestError> {
+    let TestSetup {
+        update_table_client,
+        snapshot,
+        table_uri,
+        _tmp_dir,
+        ..
+    } = setup().await?;
+    let mut resp = update_table_client.load_table_response(TABLE_ID, table_uri.as_str())?;
+    if different_uuid {
+        resp.metadata.table_uuid = "different-table".to_owned();
+    }
+    if different_location {
+        resp.metadata.location = table_uri.join("different-table/")?.to_string();
+    }
+    let err = incremental_snapshot_builder_from_load_table(snapshot, &resp).unwrap_err();
+    assert!(err.to_string().contains(if different_uuid {
+        "table UUID does not match"
+    } else {
+        "table location does not match"
+    }));
+    Ok(())
+}
+
 /// `published_names[i]` selects whether the catalog names version `i + 1` by its published or
 /// staged filename. Every version up to the last published name also gets a published file,
 /// matching in-order backfill.
@@ -184,9 +271,11 @@ async fn test_scan_returns_fixture_rows() -> Result<(), TestError> {
 async fn test_snapshot_from_catalog_response_with_published_commits(
     #[case] published_names: &[bool],
     #[values(0, 1)] base_version: u64,
+    #[values(false, true)] incremental: bool,
 ) -> Result<(), TestError> {
     let TestSetup {
         engine,
+        snapshot: seed,
         table_uri,
         _tmp_dir: tmp_dir,
         ..
@@ -241,7 +330,13 @@ async fn test_snapshot_from_catalog_response_with_published_commits(
         },
     );
 
-    let snapshot = build_snapshot(&client, &engine, &table_uri)?;
+    let snapshot = if incremental {
+        let resp =
+            client.load_table_response(TABLE_ID, table_uri.as_str().trim_end_matches('/'))?;
+        incremental_snapshot_builder_from_load_table(seed, &resp)?.build(engine.as_ref())?
+    } else {
+        build_snapshot(&client, &engine, &table_uri)?
+    };
     assert_eq!(snapshot.version(), 2);
     // Publishing copies only staged commits above this watermark.
     assert_eq!(
@@ -300,7 +395,7 @@ async fn test_snapshot_from_catalog_response_with_published_commits(
         .publish(engine.as_ref(), &uc_committer(&client))?
         .checkpoint(engine.as_ref(), None)?;
     let snapshot = Snapshot::builder_for(table_uri)
-        .with_max_catalog_version(3)
+        .with_catalog_metadata(3, vec![])
         .build(engine.as_ref())?;
     assert_eq!(snapshot.log_segment().checkpoint_version, Some(3));
     Ok(())
@@ -412,7 +507,7 @@ async fn test_checkpoint_after_publish() -> Result<(), TestError> {
 
     // Load a fresh snapshot and verify checkpoint was written
     let snapshot = Snapshot::builder_for(table_uri)
-        .with_max_catalog_version(3)
+        .with_catalog_metadata(3, vec![])
         .build(&engine)?;
     assert_eq!(snapshot.log_segment().checkpoint_version, Some(3));
 

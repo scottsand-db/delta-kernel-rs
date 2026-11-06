@@ -68,8 +68,9 @@ let resp = uc_client
 let table_uri = url::Url::parse(&resp.metadata.location)?;
 ```
 
-The `LoadTableResponse` also carries `commits` (the log tail, covered in Step 5)
-and `latest_table_version` (the catalog's current ratified version).
+The `LoadTableResponse` also carries `commits` (the complete retained commit list, covered in Step 5)
+and `latest_table_version` (the catalog's current ratified version). Keep these values from the same
+response. Custom clients must preserve the UC API's complete-response contract.
 
 ## Step 3: Fetch temporary credentials
 
@@ -134,9 +135,10 @@ into the `Arc<dyn ObjectStore>` that `DefaultEngineBuilder::new` expects. Set th
 
 ## Step 5: Build a Snapshot from the load_table response
 
-The `load_table` response already contains the log tail. Pass it to
-`snapshot_builder_from_load_table` to get a `SnapshotBuilder` with the log tail
-and max catalog version already applied, then call `build`.
+Pass the unfiltered `load_table` response to `snapshot_builder_from_load_table`. The helper supplies
+its complete retained commit list and latest ratified version through `with_catalog_metadata`, then
+you call `build`. The response must include `latest_table_version`; a metadata-changing version
+doesn't substitute for it.
 
 ```rust,ignore
 use delta_kernel_unity_catalog::snapshot_builder_from_load_table;
@@ -154,7 +156,21 @@ catalog version.
 > [!NOTE]
 > If you need the log tail directly (for example, to assemble the builder
 > yourself), use the lower-level `log_tail_from_commits`, which converts the
-> response's `commits` into a `Vec<LogPath>`.
+> response's `commits` into a `Vec<LogPath>`. Keep published filenames and supply the complete list
+> through `with_catalog_metadata`.
+
+To refresh a cached snapshot, fetch a new complete response and use the incremental helper:
+
+```rust,ignore
+use delta_kernel_unity_catalog::incremental_snapshot_builder_from_load_table;
+
+let refreshed = incremental_snapshot_builder_from_load_table(cached_snapshot, &resp)?
+    .build(&engine)?;
+```
+
+The helper checks that the response's table UUID and storage location match the cached snapshot.
+Build and install the returned snapshot even when `latest_table_version` hasn't advanced, so
+cached staged references retired by the catalog can be replaced with published paths.
 
 ## Step 6: Build and execute a Scan
 

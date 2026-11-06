@@ -30,8 +30,9 @@ use crate::{
     FfiFileStats, FfiIncrementalReplay, FfiLogSegmentStats, KernelI64Slice, KernelStringSlice,
     OptionalValue, SharedExternEngine, engine_to_handle, free_engine, free_snapshot,
     get_snapshot_builder, get_snapshot_builder_from, snapshot_builder_build,
-    snapshot_builder_with_incremental_crc_replay, snapshot_builder_with_max_catalog_version,
-    snapshot_builder_with_version, snapshot_log_segment_stats,
+    snapshot_builder_with_catalog_metadata, snapshot_builder_with_incremental_crc_replay,
+    snapshot_builder_with_max_catalog_version, snapshot_builder_with_version,
+    snapshot_log_segment_stats,
 };
 
 fn slice(value: &'static str) -> KernelStringSlice {
@@ -1850,6 +1851,36 @@ fn aggregate_with_validates_incremental_crc_replay_at_build(
             "cannot be combined with incremental CRC replay",
         );
     }
+    unsafe { free_engine(engine) };
+}
+
+#[rstest::rstest]
+fn aggregate_with_rejects_complete_catalog_metadata_at_build(
+    #[values(false, true)] catalog_before_hint: bool,
+) {
+    let engine = test_engine();
+    let builder = test_builder(&engine);
+    let builder = unsafe {
+        let with_catalog = |builder| {
+            ok_or_panic(snapshot_builder_with_catalog_metadata(
+                builder,
+                0,
+                LogPathArray::empty(),
+            ))
+        };
+        if catalog_before_hint {
+            with_minimal_hint(with_catalog(builder))
+        } else {
+            with_catalog(with_minimal_hint(builder))
+        }
+    };
+
+    let result = unsafe { snapshot_builder_build(builder) };
+    assert_extern_result_error_contains(
+        result,
+        FFIKernelError::MaxCatalogVersionError,
+        "with_catalog_metadata cannot be combined with a snapshot hint",
+    );
     unsafe { free_engine(engine) };
 }
 

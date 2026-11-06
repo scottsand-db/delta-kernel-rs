@@ -29,7 +29,7 @@ async fn test_metric_events_carry_table_type(#[case] catalog_managed: bool) -> K
     let build_snapshot = |max_catalog_version: u64| -> KernelResult<Arc<Snapshot>> {
         let builder = Snapshot::builder_for(table_url.clone());
         let builder = if catalog_managed {
-            builder.with_max_catalog_version(max_catalog_version)
+            builder.with_catalog_metadata(max_catalog_version, vec![])
         } else {
             builder
         };
@@ -87,7 +87,7 @@ async fn test_snapshot_failure_events_carry_table_type(#[case] catalog_managed: 
 
     let builder = Snapshot::builder_for(table_url);
     let builder = if catalog_managed {
-        builder.with_max_catalog_version(0)
+        builder.with_catalog_metadata(0, vec![])
     } else {
         builder
     };
@@ -118,7 +118,7 @@ async fn test_protocol_metadata_load_failure_carries_table_type(#[case] catalog_
 
     let builder = Snapshot::builder_for(table_url);
     let builder = if catalog_managed {
-        builder.with_max_catalog_version(0)
+        builder.with_catalog_metadata(0, vec![])
     } else {
         builder
     };
@@ -153,7 +153,7 @@ async fn test_build_validation_mismatch_events_carry_requested_table_type(
 
     let builder = Snapshot::builder_for(table_url);
     let builder = if request_catalog_version {
-        builder.with_max_catalog_version(0)
+        builder.with_catalog_metadata(0, vec![])
     } else {
         builder
     };

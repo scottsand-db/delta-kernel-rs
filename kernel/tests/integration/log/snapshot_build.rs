@@ -38,14 +38,14 @@ impl TableKind {
     }
 }
 
-fn maybe_attach_max_catalog_version<Mode>(
+fn maybe_attach_catalog_metadata<Mode>(
     builder: SnapshotBuilder<Mode>,
     max_catalog_version: Version,
     kind: TableKind,
 ) -> SnapshotBuilder<Mode> {
     match kind {
         TableKind::FileSystem => builder,
-        TableKind::CatalogManaged => builder.with_max_catalog_version(max_catalog_version),
+        TableKind::CatalogManaged => builder.with_catalog_metadata(max_catalog_version, vec![]),
     }
 }
 
@@ -95,7 +95,7 @@ async fn setup_multi_version_table<E: TaskExecutor>(
     assert!(create_snapshot.is_built_as_latest());
     create_snapshot.write_checksum(engine.as_ref())?;
 
-    let mut snap = maybe_attach_max_catalog_version(Snapshot::builder_for(table_path), 0, kind)
+    let mut snap = maybe_attach_catalog_metadata(Snapshot::builder_for(table_path), 0, kind)
         .build(engine.as_ref())?;
     for value in 1..=LATEST_VERSION as i32 {
         snap = append_row(snap, engine, kind, value).await?;
@@ -313,7 +313,7 @@ async fn built_as_latest_is_inherited_by_derived_snapshots(
     setup_multi_version_table(&engine, &table_path, kind).await?;
 
     let mut builder =
-        maybe_attach_max_catalog_version(Snapshot::builder_for(&table_path), LATEST_VERSION, kind)
+        maybe_attach_catalog_metadata(Snapshot::builder_for(&table_path), LATEST_VERSION, kind)
             .with_incremental_crc_replay(IncrementalReplay::Unlimited);
     if base_snap_time_travel_to_latest {
         builder = builder.at_version(LATEST_VERSION);
@@ -361,7 +361,7 @@ async fn built_as_latest_on_fresh_and_incremental_build(
         kind == TableKind::CatalogManaged && time_travel_version == Some(LATEST_VERSION);
 
     let mut builder =
-        maybe_attach_max_catalog_version(Snapshot::builder_for(&table_path), LATEST_VERSION, kind);
+        maybe_attach_catalog_metadata(Snapshot::builder_for(&table_path), LATEST_VERSION, kind);
     if let Some(v) = time_travel_version {
         builder = builder.at_version(v);
     }
@@ -375,22 +375,18 @@ async fn built_as_latest_on_fresh_and_incremental_build(
     assert_eq!(base.is_built_as_latest(), base_is_latest);
 
     // Incremental build without an explicit version is latest.
-    let refreshed = maybe_attach_max_catalog_version(
-        Snapshot::builder_from(base.clone()),
-        LATEST_VERSION,
-        kind,
-    )
-    .build(engine.as_ref())?;
+    let refreshed =
+        maybe_attach_catalog_metadata(Snapshot::builder_from(base.clone()), LATEST_VERSION, kind)
+            .build(engine.as_ref())?;
     assert_eq!(refreshed.version(), LATEST_VERSION);
     assert!(refreshed.is_built_as_latest());
 
     // Incremental build time-travelling to LATEST_VERSION. `pinned` is built as latest iff either:
     // - the base was already built as latest(and we are traveling to the same version), or
     // - the time-travel version is the catalog's latest ratified version.
-    let pinned =
-        maybe_attach_max_catalog_version(Snapshot::builder_from(base), LATEST_VERSION, kind)
-            .at_version(LATEST_VERSION)
-            .build(engine.as_ref())?;
+    let pinned = maybe_attach_catalog_metadata(Snapshot::builder_from(base), LATEST_VERSION, kind)
+        .at_version(LATEST_VERSION)
+        .build(engine.as_ref())?;
     assert_eq!(pinned.version(), LATEST_VERSION);
     assert_eq!(
         pinned.is_built_as_latest(),

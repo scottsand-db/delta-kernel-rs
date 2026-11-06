@@ -12,8 +12,9 @@ A catalog-managed write has four phases:
 
 ```text
 1. LOAD SNAPSHOT
-   Catalog client resolves the table and fetches recent commits.
-   Build snapshot with Snapshot::builder_for(path).with_log_tail(commits).build()
+   Catalog client resolves the table and fetches complete catalog metadata.
+   Snapshot::builder_for(path)
+       .with_catalog_metadata(latest_version, commits).build(&engine)
 
 2. COMMIT
    Transaction generates actions. Committer stages them to _staged_commits/.
@@ -31,7 +32,7 @@ A catalog-managed write has four phases:
 
 ## Phase 1: Load a snapshot
 
-Your catalog client resolves the table, fetches credentials and recent commits, then
+Your catalog client resolves the table, fetches credentials and complete catalog metadata, then
 builds a snapshot. See [Reading catalog-managed tables](./reading.md) for the full
 details.
 
@@ -39,10 +40,9 @@ details.
 // Catalog client resolves table name -> path + credentials + commits
 let (path, credentials, commits, latest_version) = catalog_client.load_table(table_name)?;
 
-// Build snapshot with log tail and cap at the catalog-ratified version
+// Supply every retained catalog reference with the latest ratified version.
 let snapshot = Snapshot::builder_for(path)
-    .with_max_catalog_version(latest_version)
-    .with_log_tail(commits)
+    .with_catalog_metadata(latest_version, commits)
     .build(&engine)?;
 ```
 

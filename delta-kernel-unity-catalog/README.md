@@ -17,8 +17,10 @@ It provides:
 - `UCCommitter`: kernel's `Committer` trait implemented against UC, so commits are staged and
   ratified through the catalog rather than written straight to the log, plus `publish()` to promote
   ratified commits. Requires a multi-threaded tokio runtime.
-- `snapshot_builder_from_load_table()` and `log_tail_from_commits()`: build a kernel snapshot from a
-  `load_table` response, including commits UC knows about but has not yet published.
+- `snapshot_builder_from_load_table()`, `incremental_snapshot_builder_from_load_table()`, and
+  `log_tail_from_commits()`: build or refresh a kernel snapshot from a complete `load_table`
+  response. Refreshes replace retired staged references with published references, including
+  when the table version stays the same.
 - `get_required_properties_for_disk()` and `build_uc_create_table_request()`: the table-creation
   flow.
 - `aws_object_store_options()`: maps UC-vended storage credentials onto object-store options.

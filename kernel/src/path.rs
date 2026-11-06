@@ -146,6 +146,18 @@ pub(crate) struct ParsedLogPath<Location: AsUrl = FileMeta> {
     pub file_type: LogPathFileType,
 }
 
+impl ParsedLogPath {
+    /// Construct the canonical published copy without I/O. Publication preserves byte size;
+    /// inherited mtime is a convention, not an observation of the destination object's mtime.
+    pub(crate) fn to_published(&self, log_root: &Url) -> KernelResult<Self> {
+        Self::parse_commit(FileMeta {
+            location: log_root.join(&format!("{:020}.json", self.version))?,
+            last_modified: self.location.last_modified,
+            size: self.location.size,
+        })
+    }
+}
+
 // Internal helper used by ParsedLogPath::new below. It parses a fixed-length path component.
 // A parsing failure returns None. A wrong length produces None, even if the parse succeeded.
 fn parse_path_part<T: FromStr>(value: &str, expect_len: usize) -> Option<T> {

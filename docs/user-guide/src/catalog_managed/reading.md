@@ -1,8 +1,8 @@
 # Reading catalog-managed tables
 
-To read a catalog-managed table, you provide Kernel with a **log tail**: the set of
-recent ratified commits your catalog client knows about. Kernel merges these with whatever
-it finds on the filesystem to build a complete [Snapshot](../concepts/architecture.md).
+To read a catalog-managed table, you provide Kernel with a complete catalog observation:
+the latest ratified version and every commit reference the catalog retains. Kernel combines
+these with published log files to build a [Snapshot](../concepts/architecture.md).
 
 Before reading this page, make sure you understand
 [Catalog-managed tables](./overview.md).
@@ -16,7 +16,7 @@ any Kernel API, the catalog client must:
    `s3://bucket/path/to/table/`)
 2. **Fetch storage credentials** (e.g. temporary AWS credentials for the table's S3
    location)
-3. **Get the latest ratified commits** from the catalog (the log tail)
+3. **Get the complete retained commit list and latest ratified version** in one catalog observation
 
 Each catalog has its own APIs for these steps.
 
@@ -25,7 +25,8 @@ Each catalog has its own APIs for these steps.
 A catalog-managed table can have a mix of published commits (already in `_delta_log/`)
 and unpublished ratified commits (in `_staged_commits/` or inline in the catalog).
 Kernel lists `_delta_log/` to find published commits and checkpoints, but it cannot
-discover unpublished commits on its own. The log tail bridges this gap.
+discover unpublished commits on its own. The **log tail** is the catalog's retained commit list
+that supplies those references. A complete list can omit an already-published prefix.
 
 For example, suppose versions 0-7 are published and versions 8-9 are staged:
 
@@ -44,8 +45,9 @@ versions 8 and 9.
 
 ## Building a log tail
 
-The catalog client calls the catalog's commits API to get the latest ratified
-commits, then translates each one into a `LogPath`:
+The catalog client fetches the complete retained commit list, then translates every entry into a
+`LogPath`. Verify completeness from your serving API's contract and request coverage. Don't filter
+out published filenames or limit the response to versions after a cached snapshot.
 
 ```rust,ignore
 use delta_kernel::LogPath;
@@ -75,32 +77,49 @@ catalog-ratified version:
 use delta_kernel::Snapshot;
 
 let snapshot = Snapshot::builder_for(table_url)
-    .with_max_catalog_version(latest_version) // the latest version the catalog ratified
-    .with_log_tail(log_paths)                 // the commits the catalog returned
+    .with_catalog_metadata(latest_version, log_paths)
     .build(&engine)?;
 ```
 
-The log tail must be a **contiguous sequence** `M..=N`: ascending by version, no gaps,
-no duplicates. The first version `M` can be any value `>= 0` (typical catalog clients
-return a suffix of recent commits, not the full history). The last version `N` depends
-on whether you are time-traveling:
-
-- Without time travel, `N` must equal `max_catalog_version`.
-- With `.at_version(v)`, `N` must be `>= v`, and `max_catalog_version` must still be
-  set. Both constraints apply simultaneously.
+For the full input contract, see
+[`SnapshotBuilder::with_catalog_metadata`](https://docs.rs/delta_kernel/latest/delta_kernel/snapshot/struct.SnapshotBuilder.html#method.with_catalog_metadata).
+A nonempty list must be ascending, contiguous, and end at `latest_version`, including when you
+request an earlier snapshot. An empty complete list means every ratified commit through
+`latest_version` is published.
 
 The log tail can overlap with published commits already in `_delta_log/`. For any
 version present in both, Kernel uses the log-tail entry, as the Delta spec requires
 readers to prefer the catalog-supplied commit when the catalog provides one.
 
-Call `.with_max_catalog_version(N)` to tell Kernel the highest version the catalog has
-ratified. This prevents Kernel from loading filesystem commits beyond what the catalog
-knows about.
+`latest_version` bounds the snapshot to what the catalog has ratified, even when storage lists
+newer published files.
 
 > [!NOTE]
 > To time-travel to a specific version within a catalog-managed table, call both
-> `.at_version(v)` and `.with_max_catalog_version(N)` on the builder. Call order does
-> not matter. The requested version must not exceed `N`.
+> `.at_version(v)` and `.with_catalog_metadata(N, complete_commits)` on the builder. Call order
+> doesn't matter. The requested version must not exceed `N`. Keep the complete response even
+> when `v` is older than the catalog's latest version.
+
+## Refreshing a cached snapshot
+
+Pass a fresh complete observation to an incremental builder even when the table version hasn't
+advanced:
+
+```rust,ignore
+let refreshed = Snapshot::builder_from(cached_snapshot)
+    .with_catalog_metadata(latest_version, complete_commits)
+    .build(&engine)?;
+```
+
+Kernel replaces cached staged references that the catalog has retired with published paths.
+Install the returned snapshot in your cache; other holders of the original snapshot keep its
+original references. When Kernel doesn't have observed published metadata, replacement paths
+inherit the staged file's size and modification time. That time doesn't measure the published
+object's age.
+
+The deprecated `with_log_tail` and `with_max_catalog_version` methods preserve partial-tail and
+bound-only inputs. Those inputs don't establish retirement of omitted references. Don't combine
+them with `with_catalog_metadata` or relabel a filtered tail as a complete response.
 
 For a complete Unity Catalog example, see
 [Reading Unity Catalog tables](../unity_catalog/reading.md).

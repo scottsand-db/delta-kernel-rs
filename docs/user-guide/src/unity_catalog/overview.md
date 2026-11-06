@@ -76,9 +76,12 @@ This crate connects the UC client layer to Kernel's APIs. It depends on both
 `unity-catalog-delta-client-api` and `delta_kernel`. The key items are:
 
 - **`snapshot_builder_from_load_table()`**: turns a `load_table` response into a
-  `SnapshotBuilder` with the log tail and catalog version already applied. You
+  `SnapshotBuilder` with the complete retained commit list and latest ratified version applied. You
   call `build()` on the result (or `at_version()` first, to time-travel) to get a
   Snapshot that includes unpublished commits.
+- **`incremental_snapshot_builder_from_load_table()`**: uses a new complete response to refresh a
+  cached snapshot. It checks table identity and enables reference repair even when the table
+  version hasn't advanced. Install the snapshot returned by `build()` in your cache.
 - **`log_tail_from_commits()`**: converts the inline commits from a `load_table`
   response into a `Vec<LogPath>` log tail. Use it directly when you need to assemble
   the `SnapshotBuilder` yourself.
@@ -119,7 +122,7 @@ UC crates fill those roles:
 |-----------------|-------------------|
 | Load table metadata + log tail | `UCClient::load_table()` |
 | Obtain storage credentials | `UCClient::get_table_credentials()` |
-| Build Snapshot with catalog commits | `snapshot_builder_from_load_table()`, then `build()` |
+| Build or refresh Snapshot with complete catalog metadata | `snapshot_builder_from_load_table()` or `incremental_snapshot_builder_from_load_table()`, then `build()` |
 | Commit through catalog | `UCCommitter` implements `Committer`: stages a commit, submits it via `UpdateTableClient::update_table()` for UC to ratify, then publishes |
 | Publish staged commits | `UCCommitter::publish()` copies staged files to `_delta_log/` |
 

@@ -1192,7 +1192,7 @@ mod tests {
             SnapshotBuilder::new_for(table_root)
                 .with_snapshot_hint(hint)
                 .build(engine.as_ref()),
-            "Max catalog version is required when providing staged commits",
+            "A catalog version bound is required when providing staged commits",
         );
         Ok(())
     }
@@ -1362,6 +1362,7 @@ mod tests {
     }
 
     #[test_log::test(tokio::test)]
+    #[allow(deprecated)] // Snapshot hints retain bound-only and legacy-tail compatibility.
     async fn snapshot_hint_rejects_conflicting_builder_options_and_reports_failure()
     -> KernelResult<(), Box<dyn std::error::Error>> {
         let (engine, table_root, snapshot, hint) =
@@ -1443,6 +1444,7 @@ mod tests {
     }
 
     #[test_log::test(tokio::test)]
+    #[allow(deprecated)] // Snapshot hints retain bound-only and legacy-tail compatibility.
     async fn time_travel_snapshot_hint_accepts_later_max_catalog_version()
     -> KernelResult<(), Box<dyn std::error::Error>> {
         let (engine, store, table_root) = setup_test();
@@ -1515,6 +1517,7 @@ mod tests {
     }
 
     #[test_log::test(tokio::test)]
+    #[allow(deprecated)] // Snapshot hints retain bound-only and legacy-tail compatibility.
     async fn snapshot_hint_accepts_staged_commit_with_catalog_version()
     -> KernelResult<(), Box<dyn std::error::Error>> {
         let (engine, store, table_root) = setup_catalog_managed_test().await;

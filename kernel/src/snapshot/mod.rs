@@ -59,6 +59,8 @@ mod adaptive_metadata_tests;
 mod builder;
 #[cfg(test)]
 mod cancellation_tests;
+#[cfg(test)]
+mod catalog_tests;
 mod hint;
 mod incremental;
 mod reader;
@@ -191,8 +193,10 @@ impl Snapshot {
         SnapshotBuilder::new_for(table_root)
     }
 
-    /// Create a new [`IncrementalSnapshotBuilder`] to incrementally update an existing [`Snapshot`]
-    /// to a more recent version.
+    /// Create a new [`IncrementalSnapshotBuilder`] to refresh an existing [`Snapshot`] at the same
+    /// or a more recent version. A complete [`catalog
+    /// observation`](SnapshotBuilder::with_catalog_metadata) can replace retired staged
+    /// references without advancing the version.
     pub fn builder_from(existing_snapshot: SnapshotRef) -> IncrementalSnapshotBuilder {
         SnapshotBuilder::new_from(existing_snapshot)
     }
@@ -252,6 +256,28 @@ impl Snapshot {
             #[cfg(feature = "adaptive-metadata-in-dev")]
             LastManifestCommitResolution::Unresolved,
         ))
+    }
+
+    /// Copy state whose meaning is unchanged by a same-version reference rewrite. Cloning a
+    /// OnceLock preserves both unresolved caches and resolved absence without repeating reads.
+    fn copy_at_same_version(
+        &self,
+        log_segment: LogSegment,
+        built_as_latest: bool,
+        skipped_new_checkpoints: bool,
+    ) -> Self {
+        Self {
+            span: self.span.clone(),
+            log_segment,
+            table_configuration: self.table_configuration.clone(),
+            crc: self.crc.clone(),
+            built_as_latest,
+            skipped_new_checkpoints,
+            #[cfg(feature = "adaptive-metadata-in-dev")]
+            checkpoint_action: self.checkpoint_action.clone(),
+            #[cfg(feature = "adaptive-metadata-in-dev")]
+            last_manifest_commit: self.last_manifest_commit.clone(),
+        }
     }
 
     fn validate_configuration_and_crc(

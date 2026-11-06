@@ -702,8 +702,7 @@ async fn test_no_checkpoint_on_unpublished_snapshot() -> KernelResult<()> {
         size: 100,
     };
     let snapshot = Snapshot::builder_for(table_root.clone())
-        .with_log_tail(vec![LogPath::try_new(staged_commit).unwrap()])
-        .with_max_catalog_version(1)
+        .with_catalog_metadata(1, vec![LogPath::try_new(staged_commit).unwrap()])
         .build(&engine)?;
 
     assert!(matches!(

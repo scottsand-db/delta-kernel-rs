@@ -142,7 +142,7 @@ impl IncrementalScanBuilder {
         // TODO(#2493): replace this block with `CommitRange` once it exists.
         // Today we use the snapshot's already-validated commit list rather than re-listing
         // storage. This is correct for catalog-managed tables: the snapshot's log_segment
-        // includes any staged/ratified-but-unpublished commits passed in via `with_log_tail`,
+        // includes staged/ratified-but-unpublished commits supplied by catalog metadata,
         // which a fresh storage listing would silently miss. `CommitRange` will own this
         // listing-and-validation responsibility centrally.
         let snapshot_commits = &self

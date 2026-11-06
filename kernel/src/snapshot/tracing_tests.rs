@@ -379,6 +379,7 @@ async fn snapshot_unsupported_reader_feature_emits_constructor_error()
 }
 
 #[tokio::test]
+#[allow(deprecated)] // The fixture supplies a generic published tail on a filesystem table.
 async fn incremental_failure_captures_assembled_log_segment()
 -> Result<(), Box<dyn std::error::Error>> {
     let (engine, store, table_root) = setup_test();

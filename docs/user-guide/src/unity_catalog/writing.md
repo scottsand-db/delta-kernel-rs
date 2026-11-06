@@ -48,9 +48,10 @@ For the full details on building an engine from vended credentials, see
 
 ## Load a snapshot from the load_table response
 
-Build the Snapshot from the `load_table` response. Pass it to
-`snapshot_builder_from_load_table` to get a `SnapshotBuilder` with the log tail
-and max catalog version already applied, then call `build`.
+Pass the unfiltered `load_table` response to `snapshot_builder_from_load_table`. The helper supplies
+the complete retained commit list and required `latest_table_version` together, then you call
+`build`. For a cached snapshot, use `incremental_snapshot_builder_from_load_table` as described in
+[Reading UC tables](./reading.md#step-5-build-a-snapshot-from-the-load_table-response).
 
 ```rust,ignore
 use delta_kernel_unity_catalog::snapshot_builder_from_load_table;

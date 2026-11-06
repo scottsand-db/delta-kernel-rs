@@ -192,8 +192,12 @@ impl UpdateTableRequest {
 pub struct LoadTableResponse {
     /// Full table metadata.
     pub metadata: TableMetadata,
-    /// Unpublished commits known to the catalog at this read, in descending
-    /// version order (newest first).
+    /// All retained commits, in descending version order (newest first).
+    ///
+    /// For managed Delta tables, the UC Delta API guarantees a complete contiguous list through
+    /// `latest_table_version`, returned atomically with the metadata. Servers bound the retained
+    /// list at write time instead of truncating this response. Entries may name staged or
+    /// published commit files.
     #[serde(default)]
     pub commits: Vec<Commit>,
     /// Optional UniForm conversion metadata. Modeled as opaque JSON.

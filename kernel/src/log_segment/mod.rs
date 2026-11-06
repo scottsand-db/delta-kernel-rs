@@ -52,10 +52,12 @@ use crate::{
     RowVisitor, StorageHandler, Version,
 };
 
+mod catalog;
 mod crc_replay;
 mod domain_metadata_replay;
 mod protocol_metadata_replay;
 
+pub(crate) use catalog::CatalogMetadata;
 pub(crate) use domain_metadata_replay::{DomainMetadataMap, scan_domain_metadata_actions};
 #[cfg(feature = "adaptive-metadata-in-dev")]
 pub(crate) use protocol_metadata_replay::LastManifestCommitResolution;
@@ -203,9 +205,7 @@ pub(crate) fn validate_catalog_managed_versions(
     require!(
         !has_staged_commits || max_catalog_version.is_some(),
         KernelError::MaxCatalogVersion(
-            "Max catalog version is required when providing staged commits. Use \
-             with_max_catalog_version()."
-                .to_string()
+            "A catalog version bound is required when providing staged commits.".to_string()
         )
     );
 

@@ -813,8 +813,11 @@ Snapshot builder API (`ffi/src/snapshot/builder.rs` and `ffi/src/snapshot/hint/m
 - `snapshot_builder_with_version(builder, version)` -- optional: pin to a specific version
 - `snapshot_builder_with_incremental_crc_replay(builder, mode)` -- optional: advance a stale CRC
   within a commit limit or without a limit; defaults to disabled for fresh and incremental builds
-- `snapshot_builder_with_log_tail(builder, log_tail)` -- optional: set log tail (for catalog-managed tables)
-- `snapshot_builder_with_max_catalog_version(builder, version)` -- optional: set max catalog version (for catalog-managed tables)
+- `snapshot_builder_with_catalog_metadata(builder, version, commits)` -- supplies a complete catalog
+  observation, including an explicitly empty retained list, for fresh or incremental builds
+- `snapshot_builder_with_log_tail(builder, log_tail)` and
+  `snapshot_builder_with_max_catalog_version(builder, version)` -- deprecated compatibility APIs;
+  partial tails and bound-only inputs do not establish retirement of cached staged references
 - `snapshot_builder_with_snapshot_hint(builder, hint)` -- optional: validate and copy a complete
   typed snapshot hint into the builder. Log paths may name published or staged commits, checkpoint
   files, or CRC files; log compaction paths are rejected. Kernel validates every supplied path beneath

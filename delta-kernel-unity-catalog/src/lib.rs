@@ -6,8 +6,8 @@ mod errors;
 mod utils;
 
 pub use committer::UCCommitter;
-use delta_kernel::snapshot::SnapshotBuilder;
-use delta_kernel::{KernelError, KernelResult, LogPath, Snapshot};
+use delta_kernel::snapshot::{IncrementalSnapshotBuilder, SnapshotBuilder, SnapshotRef};
+use delta_kernel::{KernelError, KernelResult, LogPath, Snapshot, Version};
 use unity_catalog_delta_client_api::{Commit, LoadTableResponse};
 use url::Url;
 pub use utils::{
@@ -15,7 +15,7 @@ pub use utils::{
 };
 
 /// Convert the inline `Commit`s returned by a UC `load_table` response into
-/// kernel `LogPath`s suitable for `Snapshot::builder_for(...).with_log_tail(...)`.
+/// kernel `LogPath`s suitable for [`SnapshotBuilder::with_catalog_metadata`].
 ///
 /// Sorts commits by version because they may arrive out of order. Each commit may name either a
 /// staged or an already-published commit file. A published filename asserts that its version and
@@ -54,35 +54,78 @@ pub fn log_tail_from_commits(commits: &[Commit], table_root: Url) -> KernelResul
 
 /// Build a [`SnapshotBuilder`] from a UC `load_table` response.
 ///
-/// Parses the table location, converts the inline commits into a log tail via
-/// [`log_tail_from_commits`], and pins the catalog's ratified version with
-/// `with_max_catalog_version`. The connector still owns the `load_table` call and the final
-/// `build(engine)`; add `at_version(v)` to the returned builder to time-travel.
+/// Supplies the catalog's latest ratified version and complete retained commit list through
+/// [`SnapshotBuilder::with_catalog_metadata`]. The [UC Delta API] guarantees that managed-table
+/// responses contain every retained commit, atomically with the metadata, without truncation.
+/// Custom clients must preserve that response contract and must not filter `commits`.
+///
+/// The connector owns the `load_table` call and the final `build(engine)`. Add `at_version(v)` to
+/// the returned builder to time-travel while retaining the complete catalog observation.
+///
+/// [UC Delta API]: https://github.com/unitycatalog/unitycatalog/blob/d31fa8b47251/api/delta.yaml
 ///
 /// # Errors
 ///
 /// Returns an error if the response's location is not a valid URL, if [`log_tail_from_commits`]
-/// fails, or if `latest_table_version` is negative.
+/// fails, or if `latest_table_version` is absent or negative. The metadata-changing version is
+/// not a substitute for the latest ratified version.
 pub fn snapshot_builder_from_load_table(resp: &LoadTableResponse) -> KernelResult<SnapshotBuilder> {
-    let table_root = Url::parse(&resp.metadata.location)
-        .map_err(|e| KernelError::generic(format!("invalid table location: {e}")))?;
-    let log_tail = log_tail_from_commits(&resp.commits, table_root.clone())?;
-    let mut builder = Snapshot::builder_for(table_root).with_log_tail(log_tail);
-    if let Some(version) = resp.latest_table_version {
-        let max_catalog_version: u64 = version
-            .try_into()
-            .map_err(|_| KernelError::generic("catalog reported a negative table version"))?;
-        builder = builder.with_max_catalog_version(max_catalog_version);
+    let (table_root, max_catalog_version, commits) = catalog_metadata_from_load_table(resp)?;
+    Ok(Snapshot::builder_for(table_root).with_catalog_metadata(max_catalog_version, commits))
+}
+
+/// Builds an incremental snapshot builder from a complete UC `load_table` response.
+///
+/// Uses the same response contract as [`snapshot_builder_from_load_table`] and requires the
+/// response's table UUID and location to match the seed. The connector must also ensure that the
+/// response describes the same committed history; these identity checks cannot prove historical
+/// equivalence. Build the returned builder to reconcile retired staged references, including when
+/// the latest ratified version has not advanced.
+///
+/// Returns an error for invalid response metadata or a different table UUID or location.
+pub fn incremental_snapshot_builder_from_load_table(
+    existing_snapshot: SnapshotRef,
+    resp: &LoadTableResponse,
+) -> KernelResult<IncrementalSnapshotBuilder> {
+    let (table_root, max_catalog_version, commits) = catalog_metadata_from_load_table(resp)?;
+    if existing_snapshot.table_root() != &table_root {
+        return Err(KernelError::generic(
+            "catalog response table location does not match the existing snapshot",
+        ));
     }
-    Ok(builder)
+    if existing_snapshot.table_configuration().metadata().id() != resp.metadata.table_uuid {
+        return Err(KernelError::generic(
+            "catalog response table UUID does not match the existing snapshot",
+        ));
+    }
+    Ok(Snapshot::builder_from(existing_snapshot)
+        .with_catalog_metadata(max_catalog_version, commits))
+}
+
+fn catalog_metadata_from_load_table(
+    resp: &LoadTableResponse,
+) -> KernelResult<(Url, Version, Vec<LogPath>)> {
+    let mut table_root = Url::parse(&resp.metadata.location)
+        .map_err(|e| KernelError::generic(format!("invalid table location: {e}")))?;
+    if !table_root.path().ends_with('/') {
+        table_root.set_path(&format!("{}/", table_root.path()));
+    }
+    let version = resp
+        .latest_table_version
+        .ok_or_else(|| KernelError::generic("catalog response is missing latest_table_version"))?;
+    let max_catalog_version = version
+        .try_into()
+        .map_err(|_| KernelError::generic("catalog reported a negative table version"))?;
+    let commits = log_tail_from_commits(&resp.commits, table_root.clone())?;
+    Ok((table_root, max_catalog_version, commits))
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
+    use delta_kernel::FileMeta;
     use delta_kernel::object_store::memory::InMemory;
-    use delta_kernel::{FileMeta, Snapshot};
     use delta_kernel_default_engine::DefaultEngineBuilder;
     use rstest::rstest;
     use unity_catalog_delta_client_api::{Commit, InMemoryUpdateTableClient, TableData};
@@ -118,15 +161,10 @@ mod tests {
             .load_table_response("test_table", "memory:///")
             .unwrap();
 
-        let table_url = Url::parse(&resp.metadata.location).unwrap();
-        let log_tail = log_tail_from_commits(&resp.commits, table_url.clone()).unwrap();
-
         let store = Arc::new(InMemory::new());
         let engine = DefaultEngineBuilder::new(store).build();
-        let max_catalog_version: u64 = resp.latest_table_version.unwrap_or(0).try_into().unwrap();
-        let result = Snapshot::builder_for(table_url)
-            .with_log_tail(log_tail)
-            .with_max_catalog_version(max_catalog_version)
+        let result = snapshot_builder_from_load_table(&resp)
+            .unwrap()
             .build(&engine);
 
         assert!(
@@ -155,6 +193,15 @@ mod tests {
         let resp = load_table_response("memory:///my_table", -1);
         let err = snapshot_builder_from_load_table(&resp).unwrap_err();
         assert!(err.to_string().contains("negative table version"));
+    }
+
+    #[test]
+    fn snapshot_builder_from_load_table_requires_latest_ratified_version() {
+        let mut resp = load_table_response("memory:///my_table", 9);
+        resp.latest_table_version = None;
+        assert_eq!(resp.metadata.last_commit_version, Some(9));
+        let err = snapshot_builder_from_load_table(&resp).unwrap_err();
+        assert!(err.to_string().contains("missing latest_table_version"));
     }
 
     #[test]

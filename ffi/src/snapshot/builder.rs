@@ -19,8 +19,8 @@ use crate::{
 ///
 /// Create with [`get_snapshot_builder`] (from a table path) or [`get_snapshot_builder_from`]
 /// (incrementally from an existing snapshot). Configure with [`snapshot_builder_with_version`],
-/// [`snapshot_builder_with_incremental_crc_replay`], [`snapshot_builder_with_log_tail`], and
-/// [`snapshot_builder_with_max_catalog_version`] (for catalog-managed tables). Builders returned
+/// [`snapshot_builder_with_incremental_crc_replay`], and
+/// [`snapshot_builder_with_catalog_metadata`] (for catalog-managed tables). Builders returned
 /// by [`get_snapshot_builder`] may instead receive a complete typed snapshot hint with
 /// [`hint::snapshot_builder_with_snapshot_hint`].
 /// Finally, call [`snapshot_builder_build`] to consume the builder and obtain the snapshot. If you
@@ -30,8 +30,9 @@ pub struct FfiSnapshotBuilder {
     pub(super) source: FfiSnapshotBuilderSource,
     version: Option<Version>,
     incremental_replay: IncrementalReplay,
-    log_tail: Vec<LogPath>,
+    log_tail: Option<Vec<LogPath>>,
     max_catalog_version: Option<Version>,
+    catalog_metadata: Option<(Version, Vec<LogPath>)>,
     pub(super) snapshot_hint: Option<Box<SnapshotHint>>,
 }
 
@@ -160,7 +161,11 @@ pub unsafe extern "C" fn snapshot_builder_with_incremental_crc_replay(
     builder.into()
 }
 
-/// Set the log tail on a snapshot builder for catalog-managed tables.
+/// Supplies a commit suffix using the legacy input contract.
+///
+/// Deprecated: use [`snapshot_builder_with_catalog_metadata`] with the complete catalog response.
+/// A filtered or snapshot-derived suffix does not satisfy that contract. Combining these APIs
+/// causes [`snapshot_builder_build`] to return an error, including for an empty legacy suffix.
 ///
 /// # Errors
 ///
@@ -189,6 +194,10 @@ pub unsafe extern "C" fn snapshot_builder_with_log_tail(
 /// Set the max catalog version on a snapshot builder for catalog-managed tables. This bounds the
 /// snapshot version to what the catalog has ratified.
 ///
+/// Deprecated: supply the bound and complete commit list together through
+/// [`snapshot_builder_with_catalog_metadata`]. A bound alone is not a complete empty response.
+/// Combining these APIs causes [`snapshot_builder_build`] to return an error.
+///
 /// # Safety
 ///
 /// Caller must pass a valid builder handle. The input handle is consumed; the returned handle owns
@@ -201,6 +210,48 @@ pub unsafe extern "C" fn snapshot_builder_with_max_catalog_version(
     let mut builder = unsafe { builder.into_inner() };
     builder.max_catalog_version = Some(max_catalog_version);
     builder.into()
+}
+
+/// Supplies the catalog's latest ratified version and complete retained commit list together.
+///
+/// The list must contain every commit reference retained by the catalog for this table, in
+/// ascending contiguous version order. Published and staged commit filenames are accepted. An empty
+/// list means all ratified commits through `max_catalog_version` are published. A filtered suffix
+/// or references derived from a cached snapshot do not satisfy this contract.
+///
+/// Incremental builds replace cached references omitted by this observation with published paths.
+/// When published metadata is unavailable, replacement paths inherit the staged file's size and
+/// modification time; that time is not an observation of the published object's modification time.
+/// See [`delta_kernel::snapshot::SnapshotBuilder::with_catalog_metadata`] for the full contract.
+///
+/// Repeating this setter replaces the entire observation. Combining it with the deprecated catalog
+/// setters or a snapshot hint causes [`snapshot_builder_build`] to return an error.
+///
+/// # Errors
+///
+/// Returns an error if `catalog_commits` violates the [`crate::FfiSlice`] contract or contains an
+/// invalid log path. Catalog and table validation occurs when the builder is built.
+///
+/// # Safety
+///
+/// Caller must pass a valid builder handle. The builder is consumed unconditionally and must not be
+/// used or freed after this call. On error, the builder is dropped. The array and its nested
+/// strings are borrowed only for this call and must remain valid until it returns. Kernel copies
+/// the metadata it retains. A null array pointer is valid only when its length is zero.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn snapshot_builder_with_catalog_metadata(
+    builder: Handle<ExclusiveSnapshotBuilder>,
+    max_catalog_version: Version,
+    catalog_commits: log_path::LogPathArray,
+) -> ExternResult<Handle<ExclusiveSnapshotBuilder>> {
+    let mut builder = unsafe { builder.into_inner() };
+    let engine_arc = builder.engine.clone();
+    let engine_ref = engine_arc.as_ref();
+    let result = unsafe { catalog_commits.log_paths() }.map(|commits| {
+        builder.catalog_metadata = Some((max_catalog_version, commits));
+        builder.into()
+    });
+    unsafe { result.into_extern_result(&engine_ref) }
 }
 
 /// Consume the builder and return a snapshot. After calling, the builder pointer is _no longer
@@ -245,8 +296,9 @@ fn make_snapshot_builder(
         source,
         version: None,
         incremental_replay: IncrementalReplay::Disabled,
-        log_tail: Vec::new(),
+        log_tail: None,
         max_catalog_version: None,
+        catalog_metadata: None,
         snapshot_hint: None,
     })
     .into())
@@ -256,7 +308,7 @@ unsafe fn snapshot_builder_with_log_tail_impl(
     builder: &mut FfiSnapshotBuilder,
     log_tail: log_path::LogPathArray,
 ) -> KernelResult<()> {
-    builder.log_tail = unsafe { log_tail.log_paths() }?;
+    builder.log_tail = Some(unsafe { log_tail.log_paths() }?);
     Ok(())
 }
 
@@ -270,6 +322,7 @@ fn snapshot_builder_build_impl(
         incremental_replay,
         log_tail,
         max_catalog_version,
+        catalog_metadata,
         snapshot_hint,
     } = builder;
     let engine = engine.engine();
@@ -277,8 +330,9 @@ fn snapshot_builder_build_impl(
     struct BuildOptions {
         version: Option<Version>,
         incremental_replay: IncrementalReplay,
-        log_tail: Vec<LogPath>,
+        log_tail: Option<Vec<LogPath>>,
         max_catalog_version: Option<Version>,
+        catalog_metadata: Option<(Version, Vec<LogPath>)>,
         snapshot_hint: Option<Box<SnapshotHint>>,
     }
 
@@ -297,17 +351,23 @@ fn snapshot_builder_build_impl(
             incremental_replay,
             log_tail,
             max_catalog_version,
+            catalog_metadata,
             snapshot_hint,
         } = options;
         builder = builder.with_incremental_crc_replay(incremental_replay);
         if let Some(version) = version {
             builder = builder.at_version(version);
         }
-        if !log_tail.is_empty() {
+        #[allow(deprecated)] // Forward legacy inputs without asserting catalog completeness.
+        if let Some(log_tail) = log_tail {
             builder = builder.with_log_tail(log_tail);
         }
+        #[allow(deprecated)] // Bound-only callers retain the legacy contract.
         if let Some(max_catalog_version) = max_catalog_version {
             builder = builder.with_max_catalog_version(max_catalog_version);
+        }
+        if let Some((max_catalog_version, commits)) = catalog_metadata {
+            builder = builder.with_catalog_metadata(max_catalog_version, commits);
         }
         if let Some(snapshot_hint) = snapshot_hint {
             builder = apply_snapshot_hint(builder, snapshot_hint)?;
@@ -320,6 +380,7 @@ fn snapshot_builder_build_impl(
         incremental_replay,
         log_tail,
         max_catalog_version,
+        catalog_metadata,
         snapshot_hint,
     };
     let snapshot = match source {

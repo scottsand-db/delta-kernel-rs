@@ -194,7 +194,7 @@ mod tests {
         storage.put(&commit_path, actions.into()).await.unwrap();
 
         let snapshot = crate::snapshot::SnapshotBuilder::new_for(table_root)
-            .with_max_catalog_version(0)
+            .with_catalog_metadata(0, vec![])
             .build(&engine)
             .unwrap();
         // Try to commit a transaction with FileSystemCommitter
