@@ -6,6 +6,7 @@ mod errors;
 mod utils;
 
 pub use committer::UCCommitter;
+use constants::UC_TABLE_ID_KEY;
 use delta_kernel::snapshot::{IncrementalSnapshotBuilder, SnapshotBuilder, SnapshotRef};
 use delta_kernel::{KernelError, KernelResult, LogPath, Snapshot, Version};
 use unity_catalog_delta_client_api::{Commit, LoadTableResponse};
@@ -76,13 +77,15 @@ pub fn snapshot_builder_from_load_table(resp: &LoadTableResponse) -> KernelResul
 
 /// Builds an incremental snapshot builder from a complete UC `load_table` response.
 ///
-/// Uses the same response contract as [`snapshot_builder_from_load_table`] and requires the
-/// response's table UUID and location to match the seed. The connector must also ensure that the
-/// response describes the same committed history; these identity checks cannot prove historical
-/// equivalence. Build the returned builder to reconcile retired staged references, including when
-/// the latest ratified version has not advanced.
+/// Uses the same response contract as [`snapshot_builder_from_load_table`]. Requires matching
+/// table locations and a response table UUID equal to the seed's `io.unitycatalog.tableId`
+/// property. The connector must also ensure that the response describes the same committed
+/// history; these identity checks cannot prove historical equivalence. Build the returned builder
+/// to reconcile retired staged references, including when the latest ratified version has not
+/// advanced.
 ///
-/// Returns an error for invalid response metadata or a different table UUID or location.
+/// Returns an error for invalid response metadata, a different table location, or a missing or
+/// mismatched UC table ID in the seed.
 pub fn incremental_snapshot_builder_from_load_table(
     existing_snapshot: SnapshotRef,
     resp: &LoadTableResponse,
@@ -93,7 +96,11 @@ pub fn incremental_snapshot_builder_from_load_table(
             "catalog response table location does not match the existing snapshot",
         ));
     }
-    if existing_snapshot.table_configuration().metadata().id() != resp.metadata.table_uuid {
+    let configuration = existing_snapshot
+        .table_configuration()
+        .metadata()
+        .configuration();
+    if configuration.get(UC_TABLE_ID_KEY) != Some(&resp.metadata.table_uuid) {
         return Err(KernelError::generic(
             "catalog response table UUID does not match the existing snapshot",
         ));

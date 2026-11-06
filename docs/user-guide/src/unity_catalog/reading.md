@@ -168,7 +168,8 @@ let refreshed = incremental_snapshot_builder_from_load_table(cached_snapshot, &r
     .build(&engine)?;
 ```
 
-The helper checks that the response's table UUID and storage location match the cached snapshot.
+The helper compares the response's table UUID with the cached snapshot's `io.unitycatalog.tableId`
+property and checks that their storage locations match.
 Build and install the returned snapshot even when `latest_table_version` hasn't advanced, so
 cached staged references retired by the catalog can be replaced with published paths.
 

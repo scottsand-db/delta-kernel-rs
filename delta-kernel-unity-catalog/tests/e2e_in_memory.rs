@@ -533,8 +533,11 @@ async fn test_cannot_checkpoint_unpublished_snapshot() -> Result<(), TestError> 
     Ok(())
 }
 
+#[rstest]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_append_scan_back_and_incremental_read() -> Result<(), TestError> {
+async fn test_created_table_reads_with_distinct_catalog_and_delta_ids(
+    #[values(false, true)] incremental: bool,
+) -> Result<(), TestError> {
     let tmp = tempfile::tempdir()?;
     let table_uri = url::Url::from_directory_path(tmp.path()).map_err(|_| "invalid path")?;
 
@@ -565,6 +568,13 @@ async fn test_append_scan_back_and_incremental_read() -> Result<(), TestError> {
 
     let snap_v0 = build_snapshot(&client, &engine, &table_uri)?;
     assert_eq!(snap_v0.version(), 0);
+    assert_ne!(snap_v0.table_configuration().metadata().id(), TABLE_ID);
+    let snap_v0 = if incremental {
+        let resp = client.load_table_response(TABLE_ID, table_uri.as_str())?;
+        incremental_snapshot_builder_from_load_table(snap_v0, &resp)?.build(engine.as_ref())?
+    } else {
+        snap_v0
+    };
     let scan = snap_v0.clone().scan_builder().build()?;
     let v0_rows: usize = read_scan(&scan, engine.clone() as Arc<dyn Engine>)?
         .iter()
@@ -576,7 +586,7 @@ async fn test_append_scan_back_and_incremental_read() -> Result<(), TestError> {
     let id_col: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3]));
     let val_col: ArrayRef = Arc::new(StringArray::from(vec!["a", "b", "c"]));
     insert_data_with(
-        snap_v0,
+        snap_v0.clone(),
         &engine,
         vec![id_col, val_col],
         Box::new(uc_committer(&client)),
@@ -587,7 +597,12 @@ async fn test_append_scan_back_and_incremental_read() -> Result<(), TestError> {
     .await?
     .unwrap_committed();
 
-    let snap_v1 = build_snapshot(&client, &engine, &table_uri)?;
+    let snap_v1 = if incremental {
+        let resp = client.load_table_response(TABLE_ID, table_uri.as_str())?;
+        incremental_snapshot_builder_from_load_table(snap_v0, &resp)?.build(engine.as_ref())?
+    } else {
+        build_snapshot(&client, &engine, &table_uri)?
+    };
     assert_eq!(snap_v1.version(), 1);
     let scan = snap_v1.clone().scan_builder().build()?;
     let v1_batches = read_scan(&scan, engine.clone() as Arc<dyn Engine>)?;
@@ -613,7 +628,7 @@ async fn test_append_scan_back_and_incremental_read() -> Result<(), TestError> {
     let id_col: ArrayRef = Arc::new(Int32Array::from(vec![4, 5]));
     let val_col: ArrayRef = Arc::new(StringArray::from(vec!["d", "e"]));
     insert_data_with(
-        snap_v1,
+        snap_v1.clone(),
         &engine,
         vec![id_col, val_col],
         Box::new(uc_committer(&client)),
@@ -624,7 +639,12 @@ async fn test_append_scan_back_and_incremental_read() -> Result<(), TestError> {
     .await?
     .unwrap_committed();
 
-    let snap_v2 = build_snapshot(&client, &engine, &table_uri)?;
+    let snap_v2 = if incremental {
+        let resp = client.load_table_response(TABLE_ID, table_uri.as_str())?;
+        incremental_snapshot_builder_from_load_table(snap_v1, &resp)?.build(engine.as_ref())?
+    } else {
+        build_snapshot(&client, &engine, &table_uri)?
+    };
     assert_eq!(snap_v2.version(), 2);
     let scan = snap_v2.clone().scan_builder().build()?;
     let v2_rows: usize = read_scan(&scan, engine.clone() as Arc<dyn Engine>)?

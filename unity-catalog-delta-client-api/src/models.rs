@@ -219,7 +219,7 @@ pub struct TableMetadata {
     pub etag: String,
     /// Table type, e.g. `"MANAGED"` or `"EXTERNAL"`.
     pub table_type: String,
-    /// Stable table UUID, matching `Metadata.id` in the Delta log.
+    /// UC-assigned table UUID, distinct from the Delta log's `Metadata.id`.
     pub table_uuid: String,
     /// Cloud-storage location of the table's `_delta_log/` parent.
     pub location: String,
